@@ -240,16 +240,17 @@ export function deriveProvider(model: string): string {
 
 export function formatCompact(value: number): string {
   const absolute = Math.abs(value);
-  if (absolute >= 1e9) return `${trimNumber(value / 1e9)}B`;
-  if (absolute >= 1e6) return `${trimNumber(value / 1e6)}M`;
+  // 999.5K 四舍五入后是 1000K，所以从这里开始就进位到下一个单位。
+  if (absolute >= 999.5e6) return `${trimNumber(value / 1e9)}B`;
+  if (absolute >= 999.5e3) return `${trimNumber(value / 1e6)}M`;
   if (absolute >= 1e3) return `${trimNumber(value / 1e3)}K`;
   return Math.round(value).toLocaleString("zh-CN");
 }
 
 function trimNumber(value: number): string {
-  return value
-    .toFixed(Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2)
-    .replace(/\.?0+$/, "");
+  const absolute = Math.abs(value);
+  const digits = absolute >= 100 ? 0 : absolute >= 10 ? 1 : 2;
+  return String(Number(value.toFixed(digits)));
 }
 
 export function formatPercent(value: number): string {
