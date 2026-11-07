@@ -61,6 +61,15 @@ Claude Code 数据源是其本地会话转录：
 
 可以通过 **CLAUDE_CONFIG_DIR**（与 Claude Code 自身的环境变量一致）指定另一个 `.claude` 根目录（其下需有 `projects`）。字段语义按本机 Claude Code 2.1.317 的代码反查确认：`message.usage` 是 Anthropic Messages API 的原始用量，同一响应按内容块落多行、按响应 message ID 去重；输入 Tokens 不含缓存读写（新鲜输入口径）。转录里没有单请求延迟，耗时按时间戳沿 `parentUuid` 父链估算（含首字等待）；`cost-state` 是会话级累计、无法归因到单请求，因此 Claude Code 记录不参与 Credits 统计。统计基于当前转录内容，与 Claude 自身 /cost 的全程累计相比可能略低（失败重试等场景的行会被清理），属数据源口径差异。
 
+Codex / ChatGPT（Codex CLI 与 Codex Desktop）数据源是其本地 rollout 会话：
+
+~~~text
+~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl（7 天不动会压成 .jsonl.zst）
+~/.codex/archived_sessions/*.jsonl[.zst]
+~~~
+
+可以通过 **CODEX_HOME**（与 Codex 自身的环境变量一致）指定另一个 `.codex` 根目录（其下需有 `sessions`）。字段语义按本机 Codex 的二进制与真实 rollout 反查确认，解析口径对齐 cc-switch 的会话导入：优先取每次请求的精确 `last_token_usage`，缺失时按 `total_token_usage` 累计差推；限额刷新重发的相同快照按来源去重；缓存读 / 写是 `input_tokens` 的不相交组成部分，输入 Tokens 按扣除缓存后的新鲜输入统计；子代理 fork 复制的父历史事件按签名序列剔除重放，翻页续写页恢复前序分段的累计基线（bounded 引用走字节区间校验）。读取压缩形态需要 Node.js 22.15+（`zlib.zstdDecompressSync`）；版本过低时压缩文件跳过，普通 `.jsonl` 照常。rollout 里没有单请求费用，Codex 记录不参与 Credits 统计；耗时按各行时间戳估算（含首字等待）。
+
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 
 ## 统计口径
