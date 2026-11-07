@@ -1,0 +1,847 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Check,
+  CircleAlert,
+  CircleX,
+  Clock,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+  Wallet,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import {
+  BALANCE_KIND_OPTIONS,
+  detectBalanceKind,
+  formatBalanceNumber,
+  formatRelativeTime,
+  getBalanceKindLabel,
+  type BalanceCacheEntry,
+  type BalanceData,
+  type BalanceKind,
+  type BalanceProviderView,
+} from "@/lib/balance";
+import { MIN_QUERY_INTERVAL_MS } from "@/lib/balance-throttle";
+
+/**
+ * 余额查询视图。查询走 /api/balance/query，服务端强制最小间隔与失败冷却
+ *（对齐 cc-switch 的防风控口径：手动刷新连点只回缓存，429 冷却 5 分钟）。
+ * 本组件只在挂载期间轮询，切走视图即停止外呼。
+ */
+
+// 刷新图标反馈节奏，对齐 cc-switch QuotaLines（600ms 最小旋转 / 结果图标停留 1s）。
+const MIN_REFRESH_SPIN_MS = 600;
+const REFRESH_RESULT_MS = 1_000;
+// 「全部刷新」的并发上限，避免瞬间打满多个供应商。
+const BATCH_CONCURRENCY = 2;
+
+const AUTO_REFRESH_OPTIONS = [
+  { value: "0", label: "关闭" },
+  { value: "60000", label: "每 1 分钟" },
+  { value: "300000", label: "每 5 分钟" },
+  { value: "1800000", label: "每 30 分钟" },
+];
+
+interface BalanceStateResponse {
+  providers: BalanceProviderView[];
+  cache: Record<string, BalanceCacheEntry>;
+  storePath: string;
+}
+
+interface QueryOutcomeResponse {
+  status: "fetched" | "throttled" | "cooldown";
+  fetchedAt: number;
+  result: BalanceResultView | null;
+  waitMs?: number;
+  reason?: string | null;
+}
+
+interface BalanceResultView {
+  success: boolean;
+  data?: BalanceData[] | null;
+  error?: string | null;
+  errorKind?: "transient" | "deterministic" | null;
+}
+
+interface ProviderFormPayload {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  kind: string;
+  accessToken: string;
+  userId: string;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const inputClass =
+  "h-9 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40";
+
+// ── 供应商卡片 ────────────────────────────────────────────────
+
+function BalanceDataRows({ rows }: { rows: BalanceData[] }) {
+  return (
+    <div className="space-y-3">
+      {rows.map((row, index) => {
+        const invalid = row.isValid === false;
+        const usedRatio =
+          row.total && row.total > 0 && row.used !== null && row.used !== undefined
+            ? Math.min(1, Math.max(0, row.used / row.total))
+            : null;
+        return (
+          <div key={`${row.planName ?? "balance"}-${index}`}>
+            {row.planName && (
+              <div className="mb-1 text-[11px] text-muted-foreground">{row.planName}</div>
+            )}
+            <div className="flex min-w-0 items-baseline gap-2">
+              {invalid ? (
+                <span className="truncate text-[15px] font-medium text-red-400">
+                  {row.invalidMessage ?? "Key 已失效"}
+                </span>
+              ) : (
+                <>
+                  <span
+                    className={cn(
+                      "text-[22px] font-semibold leading-none tracking-[-0.02em] tabular-nums",
+                      row.remaining !== null && row.remaining !== undefined && row.remaining <= 0 && "text-red-400",
+                    )}
+                  >
+                    {row.remaining !== null && row.remaining !== undefined
+                      ? formatBalanceNumber(row.remaining)
+                      : "—"}
+                  </span>
+                  {row.unit && (
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {row.unit}
+                    </span>
+                  )}
+                </>
+              )}
+              {usedRatio !== null && (
+                <span className="ml-auto shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                  已用 {formatBalanceNumber(row.used ?? 0)} / {formatBalanceNumber(row.total ?? 0)}
+                </span>
+              )}
+            </div>
+            {usedRatio !== null && (
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    usedRatio >= 0.9 ? "bg-red-500" : usedRatio >= 0.75 ? "bg-amber-400" : "bg-primary",
+                  )}
+                  style={{ width: `${Math.round(usedRatio * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProviderCard({
+  provider,
+  entry,
+  refreshing,
+  feedback,
+  throttleRemainMs,
+  now,
+  onRefresh,
+  onEdit,
+  onDelete,
+}: {
+  provider: BalanceProviderView;
+  entry: BalanceCacheEntry | undefined;
+  refreshing: boolean;
+  feedback: "ok" | "fail" | null;
+  throttleRemainMs: number;
+  now: number;
+  onRefresh: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const lastResult = entry?.lastResult ?? null;
+  const failed = lastResult !== null && !lastResult.success;
+  const keyInvalid =
+    failed && lastResult.data?.some((row) => row.isValid === false) === true;
+  const transient = failed && lastResult.errorKind === "transient";
+  const rows = lastResult?.data ?? entry?.lastSuccess?.data ?? null;
+  const fromSnapshot = failed && entry?.lastSuccess !== null && entry?.lastSuccess !== undefined;
+  const cooldownActive = (entry?.cooldownUntil ?? 0) > now;
+
+  return (
+    <div className="panel flex flex-col p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">{provider.name}</span>
+          <Badge variant="secondary" className="shrink-0 text-[10px]">
+            {provider.kindLabel}
+          </Badge>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="刷新余额"
+            disabled={refreshing}
+            onClick={onRefresh}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            {refreshing ? (
+              <RefreshCw className="animate-spin" />
+            ) : feedback === "ok" ? (
+              <Check className="text-emerald-500" />
+            ) : feedback === "fail" ? (
+              <CircleX className="text-red-400" />
+            ) : (
+              <RefreshCw />
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="编辑供应商"
+            onClick={onEdit}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <Pencil />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="删除供应商"
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-red-400"
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-1.5 min-w-0 space-y-0.5 font-mono text-[11px] leading-4 text-muted-foreground">
+        <div className="truncate">{provider.baseUrl}</div>
+        <div className="truncate">
+          {provider.kind === "newapi"
+            ? `${provider.accessTokenMasked ?? "未设置 Token"} · 用户 ${provider.userId || "未设置"}`
+            : provider.apiKeyMasked || "未设置 Key"}
+        </div>
+      </div>
+
+      <div className="mt-4 flex-1">
+        {!lastResult && !rows && (
+          <div className="flex h-[52px] items-center text-xs text-muted-foreground">
+            尚未查询，点击右上角刷新获取余额
+          </div>
+        )}
+        {rows && rows.length > 0 && <BalanceDataRows rows={rows} />}
+        {failed && (
+          <div className="mt-2 text-xs leading-5">
+            {!keyInvalid && rows && rows.length > 0 && <div className="h-1" />}
+            <div
+              className={cn(
+                "flex items-start gap-1.5",
+                transient ? "text-amber-500" : "text-red-400",
+              )}
+            >
+              {transient ? (
+                <Clock className="mt-0.5 size-3.5 shrink-0" />
+              ) : (
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0 break-all">
+                {transient ? "网络波动或服务暂不可用，已暂停查询避免触发风控" : lastResult.error}
+              </span>
+            </div>
+            {keyInvalid && lastResult.data?.some((row) => row.invalidMessage) && (
+              <div className="mt-1 text-red-400">
+                {lastResult.data.find((row) => row.invalidMessage)?.invalidMessage}
+              </div>
+            )}
+            {fromSnapshot && entry?.lastSuccess && (
+              <div className="mt-1.5 text-[11px] text-muted-foreground">
+                上次成功查询 {formatRelativeTime(entry.lastSuccess.fetchedAt, now)}
+                {entry.lastSuccess.data.length > 0 &&
+                  ` · ${entry.lastSuccess.data
+                    .map((row) => `${formatBalanceNumber(row.remaining ?? 0)} ${row.unit ?? ""}`)
+                    .join(" / ")}`}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-[11px] text-muted-foreground">
+        <span>
+          {entry?.lastFetchedAt ? `${formatRelativeTime(entry.lastFetchedAt, now)}查询` : "未查询"}
+          {fromSnapshot && "（展示上次成功值）"}
+        </span>
+        {cooldownActive ? (
+          <span className="inline-flex items-center gap-1 text-amber-500" title={entry?.cooldownReason ?? undefined}>
+            <Clock className="size-3" />
+            冷却中
+          </span>
+        ) : throttleRemainMs > 0 ? (
+          <span className="tabular-nums" title="服务端限流：两次真实查询至少间隔 1 分钟">
+            {Math.ceil(throttleRemainMs / 1000)}s 后可刷新
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ── 添加 / 编辑弹窗 ──────────────────────────────────────────
+
+function ProviderDialog({
+  open,
+  editing,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  editing: BalanceProviderView | null;
+  onClose: () => void;
+  /** 返回 null 表示成功（弹窗由父组件关闭），返回字符串为错误信息。 */
+  onSubmit: (payload: ProviderFormPayload) => Promise<string | null>;
+}) {
+  const [name, setName] = useState(editing?.name ?? "");
+  const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [kind, setKind] = useState<string>(editing?.kind ?? "auto");
+  const [accessToken, setAccessToken] = useState("");
+  const [userId, setUserId] = useState(editing?.userId ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const detected = detectBalanceKind(baseUrl);
+  const resolvedKind: BalanceKind = kind !== "auto" ? (kind as BalanceKind) : (detected ?? "general");
+  const needsNewapiCredentials = resolvedKind === "newapi";
+
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const message = await onSubmit({ name, baseUrl, apiKey, kind, accessToken, userId });
+      if (message) setError(message);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>{editing ? "编辑供应商" : "添加供应商"}</DialogTitle>
+          <DialogDescription>
+            {editing
+              ? "修改供应商信息；API Key 留空表示保持不变。"
+              : "配置余额查询的供应商，Key 只保存在本机，不会上传。"}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-1">
+          <label className="block space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">名称</span>
+            <input
+              className={inputClass}
+              value={name}
+              maxLength={40}
+              placeholder="如 DeepSeek 主号"
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              Base URL
+              {baseUrl && (
+                <Badge variant={detected ? "default" : "outline"} className="text-[10px]">
+                  {detected ? `已识别 ${getBalanceKindLabel(detected)}` : "未识别，按所选模板查询"}
+                </Badge>
+              )}
+            </span>
+            <input
+              className={cn(inputClass, "font-mono text-xs")}
+              value={baseUrl}
+              placeholder="https://api.deepseek.com"
+              onChange={(event) => setBaseUrl(event.target.value)}
+            />
+          </label>
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">查询模板</span>
+            <Select value={kind} onValueChange={(value) => setKind(value ?? "auto")}>
+              <SelectTrigger className="h-9 w-full border-border bg-card text-xs" aria-label="查询模板">
+                <SelectValue>
+                  {BALANCE_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? "自动检测"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {BALANCE_KIND_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-4 text-muted-foreground/80">
+              {BALANCE_KIND_OPTIONS.find((option) => option.value === resolvedKind)?.hint}
+            </p>
+          </div>
+          {needsNewapiCredentials ? (
+            <>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">Access Token（必填）</span>
+                <input
+                  className={cn(inputClass, "font-mono text-xs")}
+                  value={accessToken}
+                  placeholder={editing ? "留空表示保持不变" : "new-api 系统访问令牌"}
+                  onChange={(event) => setAccessToken(event.target.value)}
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">用户 ID</span>
+                <input
+                  className={cn(inputClass, "font-mono text-xs")}
+                  value={userId}
+                  placeholder="请求头 New-Api-User 的值"
+                  onChange={(event) => setUserId(event.target.value)}
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">API Key（可选）</span>
+                <input
+                  className={cn(inputClass, "font-mono text-xs")}
+                  value={apiKey}
+                  placeholder={editing ? "留空表示保持不变" : "推理用 Key，仅作记录"}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">
+                API Key{editing ? "（留空保持不变）" : ""}
+              </span>
+              <input
+                className={cn(inputClass, "font-mono text-xs")}
+                value={apiKey}
+                type="password"
+                autoComplete="off"
+                placeholder={editing ? "••••••（不修改）" : "sk-..."}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+            </label>
+          )}
+          {error && (
+            <div className="flex items-start gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button type="button" size="sm" disabled={submitting} onClick={() => void submit()}>
+            {submitting && <RefreshCw className="animate-spin" />}
+            {editing ? "保存" : "添加"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── 主视图 ───────────────────────────────────────────────────
+
+export function BalanceView() {
+  const [providers, setProviders] = useState<BalanceProviderView[]>([]);
+  const [cache, setCache] = useState<Record<string, BalanceCacheEntry>>({});
+  const [storePath, setStorePath] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
+  const [feedbacks, setFeedbacks] = useState<Record<string, "ok" | "fail">>({});
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(300_000);
+  const [now, setNow] = useState(() => Date.now());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<BalanceProviderView | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<BalanceProviderView | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // id → 下一次允许真实外呼的时间戳（由服务端响应推算，仅用于展示）。
+  const [throttleUntil, setThrottleUntil] = useState<Record<string, number>>({});
+  const refreshingAllRef = useRef(false);
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const response = await fetch("/api/balance/providers", { cache: "no-store" });
+      if (!response.ok) throw new Error("读取供应商配置失败");
+      const payload = (await response.json()) as BalanceStateResponse;
+      setProviders(payload.providers);
+      setCache(payload.cache);
+      setStorePath(payload.storePath);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "读取供应商配置失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadProviders(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadProviders]);
+
+  // 相对时间每 30s 重算（对齐 cc-switch QuotaLines useNow 的粒度）。
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const applyOutcome = useCallback((id: string, outcome: QueryOutcomeResponse) => {
+    setCache((previous) => {
+      const entry: BalanceCacheEntry = previous[id] ?? {
+        lastResult: null,
+        lastFetchedAt: 0,
+        lastSuccess: null,
+        nextEligibleAt: 0,
+        cooldownUntil: 0,
+        cooldownReason: null,
+      };
+      return {
+        ...previous,
+        [id]: {
+          ...entry,
+          lastResult: outcome.result ?? entry.lastResult,
+          lastFetchedAt: outcome.fetchedAt || entry.lastFetchedAt,
+        },
+      };
+    });
+    const remain =
+      outcome.status === "fetched"
+        ? MIN_QUERY_INTERVAL_MS - (Date.now() - outcome.fetchedAt)
+        : (outcome.waitMs ?? 0);
+    setThrottleUntil((previous) => ({
+      ...previous,
+      [id]: Date.now() + Math.max(0, remain),
+    }));
+    return outcome.status === "fetched" && (outcome.result?.success ?? false);
+  }, []);
+
+  const postQuery = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const response = await fetch("/api/balance/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ providerId: id }),
+        });
+        if (!response.ok) throw new Error("查询请求失败");
+        const outcome = (await response.json()) as QueryOutcomeResponse;
+        return applyOutcome(id, outcome);
+      } catch {
+        return false;
+      }
+    },
+    [applyOutcome],
+  );
+
+  /** 单卡刷新：600ms 最小旋转 + 结果图标停留 1s（对齐 cc-switch 刷新反馈）。 */
+  const refreshOne = useCallback(
+    async (id: string) => {
+      if (refreshingIds.has(id)) return;
+      const start = Date.now();
+      setRefreshingIds((previous) => new Set(previous).add(id));
+      const ok = await postQuery(id);
+      const elapsed = Date.now() - start;
+      if (elapsed < MIN_REFRESH_SPIN_MS) await sleep(MIN_REFRESH_SPIN_MS - elapsed);
+      setRefreshingIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+      setFeedbacks((previous) => ({ ...previous, [id]: ok ? "ok" : "fail" }));
+      window.setTimeout(() => {
+        setFeedbacks((previous) => {
+          const next = { ...previous };
+          delete next[id];
+          return next;
+        });
+      }, REFRESH_RESULT_MS);
+    },
+    [postQuery, refreshingIds],
+  );
+
+  /** 全部刷新：并发上限 2 依次查询；silent 时不转卡片图标（自动轮询用）。 */
+  const refreshAll = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (refreshingAllRef.current) return;
+      refreshingAllRef.current = true;
+      if (!options.silent) setRefreshingAll(true);
+      try {
+        const queue = providers.map((provider) => provider.id);
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(BATCH_CONCURRENCY, queue.length) }, async () => {
+          while (cursor < queue.length) {
+            const index = cursor++;
+            await postQuery(queue[index]);
+          }
+        });
+        await Promise.all(workers);
+      } finally {
+        refreshingAllRef.current = false;
+        setRefreshingAll(false);
+      }
+    },
+    [postQuery, providers],
+  );
+
+  // 自动刷新只在挂载期间运行（切走视图即停止），服务端节流兜底。
+  useEffect(() => {
+    if (autoRefresh === 0 || providers.length === 0) return;
+    const timer = window.setInterval(() => void refreshAll({ silent: true }), autoRefresh);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, providers.length, refreshAll]);
+
+  const submitProvider = useCallback(
+    async (payload: ProviderFormPayload): Promise<string | null> => {
+      try {
+        const editingId = editing?.id;
+        const response = await fetch(
+          editingId ? `/api/balance/providers/${editingId}` : "/api/balance/providers",
+          {
+            method: editingId ? "PATCH" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: payload.name,
+              baseUrl: payload.baseUrl,
+              apiKey: payload.apiKey,
+              kind: payload.kind,
+              accessToken: payload.accessToken,
+              userId: payload.userId,
+            }),
+          },
+        );
+        const body = (await response.json()) as { provider?: BalanceProviderView; error?: string };
+        if (!response.ok || !body.provider) {
+          return body.error ?? "保存失败";
+        }
+        setDialogOpen(false);
+        setEditing(null);
+        await loadProviders();
+        if (!editingId) {
+          // 新供应商立即查询一次（首次不受最小间隔限制）。
+          void postQuery(body.provider.id);
+        }
+        return null;
+      } catch (caught) {
+        return caught instanceof Error ? caught.message : "保存失败";
+      }
+    },
+    [editing, loadProviders, postQuery],
+  );
+
+  const deleteProvider = useCallback(
+    async (id: string) => {
+      try {
+        const response = await fetch(`/api/balance/providers/${id}`, { method: "DELETE" });
+        if (!response.ok) {
+          const body = (await response.json()) as { error?: string };
+          throw new Error(body.error ?? "删除失败");
+        }
+      } catch (caught) {
+        setActionError(caught instanceof Error ? caught.message : "删除失败");
+      } finally {
+        setConfirmDelete(null);
+        await loadProviders();
+      }
+    },
+    [loadProviders],
+  );
+
+  const openCreate = () => {
+    setEditing(null);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (provider: BalanceProviderView) => {
+    setEditing(provider);
+    setDialogOpen(true);
+  };
+
+  const hasProviders = providers.length > 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" onClick={openCreate} className="h-9 px-3 text-xs">
+          <Plus /> 添加供应商
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!hasProviders || refreshingAll}
+          onClick={() => void refreshAll()}
+          className="h-9 bg-card px-3 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <RefreshCw className={cn(refreshingAll && "animate-spin")} />
+          全部刷新
+        </Button>
+        <Select
+          value={String(autoRefresh)}
+          onValueChange={(value) => setAutoRefresh(Number(value ?? "0"))}
+        >
+          <SelectTrigger className="h-9 border-border bg-card text-xs" aria-label="自动刷新间隔">
+            <SelectValue>
+              {autoRefresh === 0
+                ? "自动刷新关闭"
+                : `自动刷新 ${AUTO_REFRESH_OPTIONS.find((option) => Number(option.value) === autoRefresh)?.label ?? ""}`}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {AUTO_REFRESH_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto hidden items-center gap-1.5 text-[11px] text-muted-foreground/75 sm:flex">
+          <ShieldCheck className="size-3.5" />
+          内置限流：两次查询至少间隔 1 分钟，失败自动冷却
+        </div>
+      </div>
+
+      {actionError && (
+        <div className="flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <CircleAlert className="size-4 shrink-0" />
+          <span className="flex-1">{actionError}</span>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setActionError(null)}>
+            知道了
+          </Button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div key={index} className="panel space-y-3 p-4">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-3 w-48" />
+              <Skeleton className="mt-4 h-8 w-28" />
+              <Skeleton className="mt-4 h-3 w-full" />
+            </div>
+          ))}
+        </div>
+      ) : !hasProviders ? (
+        <div className="panel flex flex-col items-center justify-center px-6 py-16 text-center">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-secondary">
+            <Wallet className="size-6 text-muted-foreground" />
+          </div>
+          <div className="mt-4 text-sm font-medium">还没有配置供应商</div>
+          <p className="mt-1.5 max-w-md text-xs leading-5 text-muted-foreground">
+            添加 DeepSeek、SiliconFlow、OpenRouter、智谱、new-api 中转站等供应商的查询配置，
+            即可在这里集中查看余额。API Key 只保存在本机，查询内置限流保护。
+          </p>
+          <Button type="button" size="sm" onClick={openCreate} className="mt-5">
+            <Plus /> 添加第一个供应商
+          </Button>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {providers.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              provider={provider}
+              entry={cache[provider.id]}
+              refreshing={refreshingIds.has(provider.id)}
+              feedback={feedbacks[provider.id] ?? null}
+              throttleRemainMs={(throttleUntil[provider.id] ?? 0) - now}
+              now={now}
+              onRefresh={() => void refreshOne(provider.id)}
+              onEdit={() => openEdit(provider)}
+              onDelete={() => setConfirmDelete(provider)}
+            />
+          ))}
+        </div>
+      )}
+
+      {hasProviders && (
+        <div className="px-1 text-[11px] leading-5 text-muted-foreground/75">
+          为避免触发供应商风控：同一供应商两次真实查询至少间隔 {MIN_QUERY_INTERVAL_MS / 1000} 秒（含手动刷新），
+          网络波动暂停 1 分钟，被限流（HTTP 429）时暂停 5 分钟并继续展示上次成功值。配置与 Key 仅保存在
+          <code className="mx-1 break-all">{storePath || "~/.y-token-panel/balance.json"}</code>
+          。
+        </div>
+      )}
+
+      <ProviderDialog
+        key={dialogOpen ? editing?.id ?? "new" : "closed"}
+        open={dialogOpen}
+        editing={editing}
+        onClose={() => {
+          setDialogOpen(false);
+          setEditing(null);
+        }}
+        onSubmit={submitProvider}
+      />
+
+      <Dialog open={confirmDelete !== null} onOpenChange={(next) => !next && setConfirmDelete(null)}>
+        <DialogContent className="sm:max-w-[380px]">
+          <DialogHeader>
+            <DialogTitle>删除供应商</DialogTitle>
+            <DialogDescription>
+              确认删除「{confirmDelete?.name}」？仅移除本面板的查询配置与缓存，不影响供应商账户。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" size="sm" onClick={() => setConfirmDelete(null)}>
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => confirmDelete && void deleteProvider(confirmDelete.id)}
+            >
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

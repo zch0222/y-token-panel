@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BalanceView } from "@/components/dashboard/balance-view";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
@@ -182,6 +183,7 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
   models: { title: "模型分析", subtitle: "比较不同模型的使用量与缓存效率" },
   projects: { title: "项目统计", subtitle: "了解各项目在不同 Harness 中的使用情况" },
   harnesses: { title: "Harness 对比", subtitle: "比较不同 AI Harness 的请求与消耗" },
+  balance: { title: "余额查询", subtitle: "查询供应商账户余额与额度，内置限流保护" },
 };
 
 export function UsageDashboard() {
@@ -388,6 +390,10 @@ export function UsageDashboard() {
         </header>
 
         <div className="mx-auto w-full max-w-[1500px] px-4 py-5 sm:px-6 sm:py-6">
+          {view === "balance" ? (
+            <BalanceView />
+          ) : (
+          <>
           <HarnessSwitcher
             value={harness}
             sources={data?.sources ?? []}
@@ -614,6 +620,8 @@ export function UsageDashboard() {
                 : "正在连接本地数据"}
             </span>
           </footer>
+          </>
+          )}
         </div>
       </main>
 

@@ -10,6 +10,7 @@ import {
   Blocks,
   PanelLeftClose,
   PanelLeftOpen,
+  Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
@@ -20,7 +21,13 @@ import {
   type UsageSummary,
 } from "@/lib/usage";
 
-export type DashboardView = "overview" | "logs" | "models" | "projects" | "harnesses";
+export type DashboardView =
+  | "overview"
+  | "logs"
+  | "models"
+  | "projects"
+  | "harnesses"
+  | "balance";
 
 interface SidebarProps {
   view: DashboardView;
@@ -37,6 +44,7 @@ const navigation = [
   { id: "models" as const, label: "模型分析", icon: Boxes },
   { id: "harnesses" as const, label: "Harness 对比", icon: Blocks },
   { id: "projects" as const, label: "项目统计", icon: FolderKanban },
+  { id: "balance" as const, label: "余额查询", icon: Wallet },
 ];
 
 export function Sidebar({
