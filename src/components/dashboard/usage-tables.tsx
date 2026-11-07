@@ -9,6 +9,7 @@ import {
   CircleAlert,
   Download,
   FileClock,
+  Gauge,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
@@ -28,6 +29,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import {
+  formatAggregateTokensPerSecond,
+  formatEstimatedTokensPerSecond,
+  getEstimatedTokensPerSecond,
+  type SpeedTotals,
+} from "@/lib/speed";
 import {
   formatCompact,
   formatCredits,
@@ -95,6 +102,39 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
   );
 }
 
+const SPEED_HELP =
+  "汇总速度 = Σ输出 Tokens ÷ Σ估算耗时（只统计输出 ≥ 200 且耗时 ≥ 1s 的请求）。CodeBuddy 会话日志没有精确计时，耗时按时间戳估算且含首字等待，结果偏低，仅作参考。";
+
+const REQUEST_SPEED_HELP =
+  "估算速度 = 输出 Tokens ÷ 估算耗时（含首字等待）。仅输出 ≥ 200 且耗时 ≥ 1s 的请求展示。";
+
+function RequestSpeedValue({ record }: { record: UsageRecord }) {
+  const speed = formatEstimatedTokensPerSecond(record);
+  if (speed == null) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="inline-flex items-baseline gap-0.5" title={REQUEST_SPEED_HELP}>
+      <span>≈ {speed}</span>
+      <span className="text-[11px] font-normal text-muted-foreground">tok/s</span>
+    </span>
+  );
+}
+
+function SpeedCell({ stat }: { stat: SpeedTotals }) {
+  const speed = formatAggregateTokensPerSecond(stat);
+  return (
+    <TableCell className={cellClass} title={SPEED_HELP}>
+      {speed == null ? (
+        <span className="text-muted-foreground">—</span>
+      ) : (
+        <span className="inline-flex items-baseline gap-0.5">
+          <span>≈ {speed}</span>
+          <span className="text-[11px] font-normal text-muted-foreground">tok/s</span>
+        </span>
+      )}
+    </TableCell>
+  );
+}
+
 function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: DetailTab }) {
   const firstLabel =
     dimension === "models"
@@ -105,7 +145,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
           ? "Harness"
           : "项目";
   return (
-    <Table className="min-w-[840px]">
+    <Table className="min-w-[920px]">
       <TableHeader>
         <TableRow className="border-border/70 hover:bg-transparent">
           <TableHead className={cn(headClass, "pl-6")}>{firstLabel}</TableHead>
@@ -116,6 +156,11 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
           </TableHead>
           <TableHead className={headClass}>计费 Credits</TableHead>
           <TableHead className={headClass}>Tokens</TableHead>
+          <TableHead className={headClass} title={SPEED_HELP}>
+            <span className="inline-flex items-center gap-0.5">
+              速度 <Gauge className="size-3 text-muted-foreground" />
+            </span>
+          </TableHead>
           <TableHead className={headClass}>缓存命中率</TableHead>
           <TableHead className={headClass}>成功率</TableHead>
           <TableHead className={cn(headClass, "pr-6 text-right")}>最近使用</TableHead>
@@ -123,7 +168,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
       </TableHeader>
       <TableBody>
         {stats.length === 0 ? (
-          <EmptyRow colSpan={7} />
+          <EmptyRow colSpan={8} />
         ) : (
           stats.map((stat) => {
             const label =
@@ -167,6 +212,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
                     {stat.hasTokens ? formatCompact(stat.tokens) : "—"}
                   </span>
                 </TableCell>
+                <SpeedCell stat={stat} />
                 <TableCell className={cellClass}>
                   {stat.cacheableInputTokens > 0 ? formatPercent(stat.cacheRate) : "—"}
                 </TableCell>
@@ -198,6 +244,8 @@ function exportCsv(records: UsageRecord[]) {
     "输出 Tokens",
     "缓存读取 Tokens",
     "总 Tokens",
+    "估算耗时(ms)",
+    "估算速度(tok/s)",
     "计费 Credits",
     "服务端报告 Credits",
     "是否计费",
@@ -215,6 +263,8 @@ function exportCsv(records: UsageRecord[]) {
     record.hasTokenUsage ? record.outputTokens : "",
     record.hasTokenUsage ? record.cacheReadTokens : "",
     record.hasTokenUsage ? record.totalTokens : "",
+    record.estimatedDurationMs ?? "",
+    getEstimatedTokensPerSecond(record)?.toFixed(1) ?? "",
     record.hasCredit ? record.credits : "",
     record.reportedCredits ?? "",
     record.billable === undefined ? "" : record.billable ? "是" : "否",
@@ -246,7 +296,7 @@ function RequestTable({
 
   return (
     <div>
-      <Table className="min-w-[1160px]">
+      <Table className="min-w-[1260px]">
         <TableHeader>
           <TableRow className="border-border/70 hover:bg-transparent">
             <TableHead className={cn(headClass, "pl-6")}>时间</TableHead>
@@ -257,13 +307,18 @@ function RequestTable({
             <TableHead className={cn(headClass, "text-right")}>输出</TableHead>
             <TableHead className={cn(headClass, "text-right")}>缓存</TableHead>
             <TableHead className={cn(headClass, "text-right")}>总 Tokens</TableHead>
+            <TableHead className={cn(headClass, "text-right")} title={SPEED_HELP}>
+              <span className="inline-flex items-center gap-0.5">
+                速度 <Gauge className="size-3 text-muted-foreground" />
+              </span>
+            </TableHead>
             <TableHead className={cn(headClass, "text-right")}>Credits</TableHead>
             <TableHead className={cn(headClass, "pr-6 text-right")}>状态</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.length === 0 ? (
-            <EmptyRow colSpan={10} />
+            <EmptyRow colSpan={11} />
           ) : (
             rows.map((record) => (
               <TableRow
@@ -305,6 +360,9 @@ function RequestTable({
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right font-medium")}>
                   {record.hasTokenUsage ? formatCompact(record.totalTokens) : "—"}
+                </TableCell>
+                <TableCell className={cn(cellClass, "text-right")}>
+                  <RequestSpeedValue record={record} />
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
                   {record.billable === false ? (
@@ -469,6 +527,22 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
                   value={selected.hasTokenUsage ? selected.cacheCreationTokens.toLocaleString("zh-CN") : "未上报"}
                 />
                 <DetailItem label="计费 Credits" value={formatCredits(selected.credits, selected.hasCredit)} />
+                {selected.estimatedDurationMs !== undefined && (
+                  <DetailItem
+                    label="估算耗时"
+                    value={`${(selected.estimatedDurationMs / 1000).toFixed(1)} s`}
+                  />
+                )}
+                {selected.estimatedDurationMs !== undefined && (
+                  <DetailItem
+                    label="估算速度"
+                    value={
+                      formatEstimatedTokensPerSecond(selected) == null
+                        ? "—（未达估算门槛）"
+                        : `≈ ${formatEstimatedTokensPerSecond(selected)} tok/s`
+                    }
+                  />
+                )}
               </div>
               <div className="space-y-2.5">
                 {selected.billable !== undefined && (
@@ -495,6 +569,8 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
                     ? "输入 Tokens 不包含缓存读写；总 Tokens 已合并输入、输出与缓存读写。"
                     : "输入 Tokens 已包含缓存读取；总 Tokens 采用原始 total_tokens，不重复累计。"
                   : "该 Harness 的本地记录未提供有效 Token 数值，仅展示 Credits 与请求信息。"}
+                {selected.estimatedDurationMs !== undefined &&
+                  " 速度与耗时为估算值：按会话时间戳推算（消息完成时刻 − 请求起点），含首字等待，仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。"}
               </p>
             </>
           )}

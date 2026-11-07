@@ -1,3 +1,5 @@
+import { sumSpeedTotals } from "@/lib/speed";
+
 export const HARNESS_OPTIONS = [
   { id: "codebuddy", label: "CodeBuddy", description: "CodeBuddy CLI 本地会话" },
   { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
@@ -35,6 +37,11 @@ export interface UsageRecord {
   reportedCredits?: number;
   billable?: boolean;
   contextUsageRatio?: number;
+  /**
+   * 估算的请求耗时（毫秒）。CodeBuddy 会话日志按时间戳推算（完成时刻 −
+   * 请求起点，含首字等待）；推不出时为 undefined。Qoder 记录没有该字段。
+   */
+  estimatedDurationMs?: number;
   status: "success" | "error";
 }
 
@@ -83,6 +90,10 @@ export interface UsageSummary {
   cacheableInputTokens: number;
   cacheRate: number;
   successRate: number;
+  /** 速度分子：可估算速度的请求（输出 ≥ 200 token 且估算耗时 ≥ 1s）的输出 token 之和。 */
+  speedOutputTokens: number;
+  /** 速度分母：同批请求的估算耗时之和（毫秒）。汇总速度 = 分子 ÷ (分母 / 1000)。 */
+  speedDurationMs: number;
 }
 
 export interface GroupStat extends UsageSummary {
@@ -197,6 +208,7 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     const credits = creditTotals.get(option.id);
     return credits === undefined ? [] : [{ harness: option.id, label: option.label, credits }];
   });
+  const speedTotals = sumSpeedTotals(records);
   return {
     requests: records.length,
     credits: records.reduce((sum, record) => sum + record.credits, 0),
@@ -212,6 +224,8 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     cacheableInputTokens,
     cacheRate: cacheableInputTokens > 0 ? cacheReadTokens / cacheableInputTokens : 0,
     successRate: records.length > 0 ? successful / records.length : 0,
+    speedOutputTokens: speedTotals.speedOutputTokens,
+    speedDurationMs: speedTotals.speedDurationMs,
   };
 }
 
