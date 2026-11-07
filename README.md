@@ -53,6 +53,14 @@ KCode（Kimi Code）数据源是其本地会话 wire 日志：
 
 可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
 
+Claude Code 数据源是其本地会话转录：
+
+~~~text
+~/.claude/projects/<项目>/<会话>.jsonl（子 agent 在 <会话>/subagents/ 下）
+~~~
+
+可以通过 **CLAUDE_CONFIG_DIR**（与 Claude Code 自身的环境变量一致）指定另一个 `.claude` 根目录（其下需有 `projects`）。字段语义按本机 Claude Code 2.1.317 的代码反查确认：`message.usage` 是 Anthropic Messages API 的原始用量，同一响应按内容块落多行、按响应 message ID 去重；输入 Tokens 不含缓存读写（新鲜输入口径）。转录里没有单请求延迟，耗时按时间戳沿 `parentUuid` 父链估算（含首字等待）；`cost-state` 是会话级累计、无法归因到单请求，因此 Claude Code 记录不参与 Credits 统计。统计基于当前转录内容，与 Claude 自身 /cost 的全程累计相比可能略低（失败重试等场景的行会被清理），属数据源口径差异。
+
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 
 ## 统计口径

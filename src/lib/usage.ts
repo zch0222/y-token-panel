@@ -5,6 +5,7 @@ export const HARNESS_OPTIONS = [
   { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
   { id: "zcode", label: "ZCode", description: "ZCode Desktop / CLI 本地会话" },
   { id: "kcode", label: "KCode", description: "Kimi Code Desktop / CLI 本地会话" },
+  { id: "claude", label: "Claude Code", description: "Claude Code CLI / Desktop 本地会话" },
 ] as const;
 
 export type HarnessId = (typeof HARNESS_OPTIONS)[number]["id"];

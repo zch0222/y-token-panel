@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Layers, Moon, SquareTerminal, Zap, type LucideIcon } from "lucide-react";
+import { Bot, Layers, Moon, Sparkles, SquareTerminal, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   HARNESS_OPTIONS,
@@ -22,6 +22,7 @@ const icons: Record<"all" | HarnessId, LucideIcon> = {
   qoder: Bot,
   zcode: Zap,
   kcode: Moon,
+  claude: Sparkles,
 };
 
 const iconStyles: Record<"all" | HarnessId, string> = {
@@ -30,6 +31,7 @@ const iconStyles: Record<"all" | HarnessId, string> = {
   qoder: "bg-violet-500/12 text-violet-400",
   zcode: "bg-emerald-500/12 text-emerald-400",
   kcode: "bg-rose-500/12 text-rose-400",
+  claude: "bg-orange-500/12 text-orange-400",
 };
 
 export function HarnessSwitcher({
@@ -49,7 +51,7 @@ export function HarnessSwitcher({
 
   return (
     <section className="panel mb-4 p-1.5" aria-label="Harness 筛选">
-      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
         {items.map((item) => {
           const Icon = icons[item.id];
           const source = sources.find((candidate) => candidate.harness === item.id);

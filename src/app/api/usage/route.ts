@@ -1,4 +1,5 @@
 import { connection, NextResponse } from "next/server";
+import { readClaudeUsage } from "@/lib/claude";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readKcodeUsage } from "@/lib/kcode";
 import { readQoderUsage } from "@/lib/qoder";
@@ -13,6 +14,7 @@ export async function GET() {
       readQoderUsage(),
       readZcodeUsage(),
       readKcodeUsage(),
+      readClaudeUsage(),
     ]);
     const usage: UsageResponse = {
       records: results.flatMap((result) => result.records),
