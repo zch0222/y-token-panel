@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Y Token Panel
 
-## Getting Started
+参考 CC Switch 用量统计模板实现的 CodeBuddy CLI 本地 Token 用量面板。使用 Next.js、Tailwind CSS、shadcn/ui 和 Recharts。
 
-First, run the development server:
+## 功能
 
-```bash
+- 读取本机 CodeBuddy CLI 会话 JSONL，展示真实 Token、Credits 和缓存用量
+- 当天、昨天、近 7 天、近 30 天和全部时间筛选
+- 按项目、供应商、模型组合筛选
+- 请求数、Tokens、Credits、缓存命中率趋势图（柱状图 / 面积图）
+- 请求日志、供应商、模型和项目聚合表格
+- 请求详情、分页、CSV 导出、自动刷新、深色 / 浅色主题
+
+## 启动
+
+要求 Node.js 20.9 或更高版本。
+
+~~~bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+~~~
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+打开 <http://127.0.0.1:3000>。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 数据源
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+默认读取：
 
-## Learn More
+~~~text
+~/.codebuddy/projects/<project>/*.jsonl
+~~~
 
-To learn more about Next.js, take a look at the following resources:
+可以通过 **CODEBUDDY_DATA_DIR** 指定另一个 CodeBuddy projects 目录：
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+~~~powershell
+$env:CODEBUDDY_DATA_DIR="D:\path\to\projects"
+npm run dev
+~~~
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 
-## Deploy on Vercel
+## 统计口径
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- **请求数**：包含用量字段的 CodeBuddy API 调用记录数。
+- **总 Tokens**：优先使用原始 total_tokens。CodeBuddy 的输入 Tokens 已包含缓存读取，因此不会再次累加缓存 Tokens。
+- **缓存命中率**：缓存读取 Tokens ÷ 输入 Tokens。
+- **Credits**：原始 credit 字段的合计，不是美元金额；缺失时显示为 —。
+- **成功率**：根据会话记录状态统计，不推测日志中没有的 HTTP 状态码、首字时间或生成速度。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 检查
+
+~~~bash
+npm run lint
+npm run typecheck
+npm run build
+~~~

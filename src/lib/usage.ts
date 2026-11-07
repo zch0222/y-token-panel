@@ -1,0 +1,280 @@
+export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all";
+export type MetricKey = "credits" | "requests" | "tokens" | "cacheRate";
+export type GroupDimension = "model" | "provider" | "project";
+
+export interface UsageRecord {
+  id: string;
+  requestId: string;
+  sessionId: string;
+  project: string;
+  model: string;
+  provider: string;
+  timestamp: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+  credits: number;
+  hasCredit: boolean;
+  status: "success" | "error";
+}
+
+export interface UsageResponse {
+  records: UsageRecord[];
+  scannedFiles: number;
+  skippedFiles: number;
+  syncedAt: number;
+  source: string;
+  sourceAvailable: boolean;
+}
+
+export interface UsageSummary {
+  requests: number;
+  credits: number;
+  hasCredit: boolean;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheRate: number;
+  successRate: number;
+}
+
+export interface GroupStat extends UsageSummary {
+  key: string;
+  lastUsed: number;
+}
+
+export interface TrendPoint {
+  key: string;
+  label: string;
+  fullLabel: string;
+  tokens: number;
+  requests: number;
+  credits: number;
+  cacheRate: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+}
+
+export const RANGE_OPTIONS: Array<{ value: RangeKey; label: string }> = [
+  { value: "today", label: "当天" },
+  { value: "yesterday", label: "昨天" },
+  { value: "7d", label: "近 7 天" },
+  { value: "30d", label: "近 30 天" },
+  { value: "all", label: "全部时间" },
+];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const pad = (value: number) => String(value).padStart(2, "0");
+
+export function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+export function getRangeBounds(range: RangeKey, now = new Date()) {
+  const today = startOfDay(now).getTime();
+  if (range === "today") return { start: today, end: now.getTime() };
+  if (range === "yesterday") {
+    return { start: today - DAY_MS, end: today - 1 };
+  }
+  if (range === "7d") return { start: today - 6 * DAY_MS, end: now.getTime() };
+  if (range === "30d") return { start: today - 29 * DAY_MS, end: now.getTime() };
+  return { start: 0, end: Number.POSITIVE_INFINITY };
+}
+
+export function filterUsageRecords(
+  records: UsageRecord[],
+  range: RangeKey,
+  project = "all",
+  provider = "all",
+  model = "all",
+  now = new Date(),
+): UsageRecord[] {
+  const { start, end } = getRangeBounds(range, now);
+  return records
+    .filter(
+      (record) =>
+        record.timestamp >= start &&
+        record.timestamp <= end &&
+        (project === "all" || record.project === project) &&
+        (provider === "all" || record.provider === provider) &&
+        (model === "all" || record.model === model),
+    )
+    .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+export function summarizeRecords(records: UsageRecord[]): UsageSummary {
+  const inputTokens = records.reduce((sum, record) => sum + record.inputTokens, 0);
+  const cacheReadTokens = records.reduce(
+    (sum, record) => sum + record.cacheReadTokens,
+    0,
+  );
+  const successful = records.filter((record) => record.status === "success").length;
+  return {
+    requests: records.length,
+    credits: records.reduce((sum, record) => sum + record.credits, 0),
+    hasCredit: records.some((record) => record.hasCredit),
+    tokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
+    inputTokens,
+    outputTokens: records.reduce((sum, record) => sum + record.outputTokens, 0),
+    cacheReadTokens,
+    cacheRate: inputTokens > 0 ? cacheReadTokens / inputTokens : 0,
+    successRate: records.length > 0 ? successful / records.length : 0,
+  };
+}
+
+export function groupRecords(
+  records: UsageRecord[],
+  dimension: GroupDimension,
+): GroupStat[] {
+  const groups = new Map<string, UsageRecord[]>();
+  for (const record of records) {
+    const key = record[dimension];
+    const group = groups.get(key) ?? [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  return Array.from(groups, ([key, rows]) => ({
+    key,
+    ...summarizeRecords(rows),
+    lastUsed: Math.max(...rows.map((record) => record.timestamp)),
+  })).sort((a, b) => b.requests - a.requests || b.tokens - a.tokens);
+}
+
+function dateKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
+  return {
+    key,
+    label,
+    fullLabel,
+    tokens: 0,
+    requests: 0,
+    credits: 0,
+    cacheRate: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+  };
+}
+
+export function buildTrend(
+  records: UsageRecord[],
+  range: RangeKey,
+  now = new Date(),
+): TrendPoint[] {
+  const points = new Map<string, TrendPoint>();
+  const hourly = range === "today" || range === "yesterday";
+
+  if (hourly) {
+    const today = startOfDay(now).getTime();
+    const day = range === "today" ? today : today - DAY_MS;
+    const hours = range === "today" ? now.getHours() + 1 : 24;
+    for (let hour = 0; hour < hours; hour += 1) {
+      const key = `${dateKey(day)} ${pad(hour)}`;
+      points.set(
+        key,
+        emptyPoint(
+          key,
+          `${pad(hour)}:00`,
+          `${dateKey(day)} ${pad(hour)}:00–${pad((hour + 1) % 24)}:00`,
+        ),
+      );
+    }
+  } else if (range === "all") {
+    const days = Array.from(new Set(records.map((record) => dateKey(record.timestamp)))).sort();
+    for (const day of days) {
+      const date = new Date(`${day}T00:00:00`);
+      points.set(
+        day,
+        emptyPoint(day, `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`, day),
+      );
+    }
+  } else {
+    const { start, end } = getRangeBounds(range, now);
+    for (let timestamp = start; timestamp <= end; timestamp += DAY_MS) {
+      const key = dateKey(timestamp);
+      const date = new Date(timestamp);
+      points.set(
+        key,
+        emptyPoint(key, `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`, key),
+      );
+    }
+  }
+
+  for (const record of records) {
+    const key = hourly
+      ? `${dateKey(record.timestamp)} ${pad(new Date(record.timestamp).getHours())}`
+      : dateKey(record.timestamp);
+    const point = points.get(key);
+    if (!point) continue;
+    point.tokens += record.totalTokens;
+    point.requests += 1;
+    point.credits += record.credits;
+    point.inputTokens += record.inputTokens;
+    point.cacheReadTokens += record.cacheReadTokens;
+  }
+
+  return Array.from(points.values()).map((point) => ({
+    ...point,
+    cacheRate: point.inputTokens > 0 ? point.cacheReadTokens / point.inputTokens : 0,
+  }));
+}
+
+export function deriveProvider(model: string): string {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("deepseek")) return "DeepSeek";
+  if (normalized.includes("kimi") || /^k\d/.test(normalized)) return "Moonshot AI";
+  if (normalized.includes("claude")) return "Anthropic";
+  if (/(gpt|openai|^o[134])/.test(normalized)) return "OpenAI";
+  if (normalized.includes("gemini")) return "Google";
+  if (normalized.includes("qwen")) return "Alibaba Cloud";
+  if (normalized.includes("doubao")) return "Volcengine";
+  if (normalized.includes("minimax")) return "MiniMax";
+  return "CodeBuddy";
+}
+
+export function formatCompact(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1e9) return `${trimNumber(value / 1e9)}B`;
+  if (absolute >= 1e6) return `${trimNumber(value / 1e6)}M`;
+  if (absolute >= 1e3) return `${trimNumber(value / 1e3)}K`;
+  return Math.round(value).toLocaleString("zh-CN");
+}
+
+function trimNumber(value: number): string {
+  return value
+    .toFixed(Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2)
+    .replace(/\.?0+$/, "");
+}
+
+export function formatPercent(value: number): string {
+  const percent = Math.max(0, Math.min(100, value * 100));
+  return `${percent.toFixed(percent >= 99.95 || percent === 0 ? 0 : 1)}%`;
+}
+
+export function formatCredits(value: number, hasCredit = true): string {
+  if (!hasCredit) return "—";
+  return value.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+export function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
+export function getProjectLabel(directory: string): string {
+  return directory.replace(/^[a-z]-code-/i, "") || directory;
+}

@@ -1,26 +1,153 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-geist-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--ring);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-accent-foreground: var(--accent-foreground);
+  --color-sidebar-accent: var(--accent);
+  --color-sidebar-primary-foreground: var(--primary-foreground);
+  --color-sidebar-primary: var(--primary);
+  --color-sidebar-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root {
+  --background: #f4f6f8;
+  --foreground: #20242a;
+  --card: #ffffff;
+  --card-foreground: #20242a;
+  --popover: #ffffff;
+  --popover-foreground: #20242a;
+  --primary: #159bd3;
+  --primary-foreground: #ffffff;
+  --secondary: #e9edf1;
+  --secondary-foreground: #343a42;
+  --muted: #eef1f4;
+  --muted-foreground: #747d89;
+  --accent: #e8f4fa;
+  --accent-foreground: #147ca9;
+  --destructive: #d84c4c;
+  --border: #e1e5e9;
+  --input: #dfe4e8;
+  --ring: #39b9ef;
+  --chart-1: #32b6ed;
+  --chart-2: #8b7cf6;
+  --chart-3: #4cc9a5;
+  --chart-4: #f3b85b;
+  --chart-5: #ec7f9d;
+  --sidebar: #ffffff;
+  --radius: 0.65rem;
+}
+
+.dark {
+  --background: #111214;
+  --foreground: #eceef1;
+  --card: #1c1e21;
+  --card-foreground: #eceef1;
+  --popover: #24262a;
+  --popover-foreground: #eceef1;
+  --primary: #35b8ef;
+  --primary-foreground: #09212c;
+  --secondary: #292c30;
+  --secondary-foreground: #d9dde2;
+  --muted: #27292d;
+  --muted-foreground: #9299a3;
+  --accent: #293c46;
+  --accent-foreground: #74d1f6;
+  --destructive: #f27777;
+  --border: #2d3035;
+  --input: #34373d;
+  --ring: #35b8ef;
+  --chart-1: #35b8ef;
+  --chart-2: #9484f8;
+  --chart-3: #4cc9a5;
+  --chart-4: #f3b85b;
+  --chart-5: #ec7f9d;
+  --sidebar: #17181b;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@utility panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.dark .panel {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.015), 0 8px 24px rgb(0 0 0 / 0.08);
+}
+
+@utility scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.recharts-cartesian-axis-tick-value,
+.recharts-text {
+  fill: var(--muted-foreground);
+}
+
+.recharts-tooltip-cursor {
+  fill: var(--muted);
+  opacity: 0.45;
 }
