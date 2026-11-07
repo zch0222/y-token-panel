@@ -69,6 +69,10 @@ const providerColors: Record<string, string> = {
   MiniMax: "bg-rose-500/15 text-rose-400",
   CodeBuddy: "bg-amber-500/15 text-amber-400",
   Qoder: "bg-violet-500/15 text-violet-400",
+  // ZCode 的 provider 字段是它自身的 providerId（如 account:bigmodel-individual-coding-plan）。
+  "account:bigmodel-individual-coding-plan": "bg-emerald-500/15 text-emerald-400",
+  "account:bigmodel-start-plan": "bg-teal-500/15 text-teal-400",
+  "bigmodel-api": "bg-emerald-500/15 text-emerald-400",
 };
 
 function ProviderMark({ name, small = false }: { name: string; small?: boolean }) {
@@ -103,7 +107,7 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
 }
 
 const SPEED_HELP =
-  "汇总速度 = Σ输出 Tokens ÷ Σ估算耗时（只统计输出 ≥ 200 且耗时 ≥ 1s 的请求）。CodeBuddy 会话日志没有精确计时，耗时按时间戳估算且含首字等待，结果偏低，仅作参考。";
+  "汇总速度 = Σ输出 Tokens ÷ Σ估算耗时（只统计输出 ≥ 200 且耗时 ≥ 1s 的请求）。CodeBuddy 会话日志没有精确计时，耗时按时间戳估算且含首字等待，结果偏低，仅作参考；ZCode 记录的是精确请求耗时（同样含首字等待）。";
 
 const REQUEST_SPEED_HELP =
   "估算速度 = 输出 Tokens ÷ 估算耗时（含首字等待）。仅输出 ≥ 200 且耗时 ≥ 1s 的请求展示。";

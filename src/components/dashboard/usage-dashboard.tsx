@@ -119,6 +119,25 @@ function MetricCard({
 const BACKGROUND_REQUEST_NOTE =
   "Qoder 的 auto-mode 分类器、会话标题、compact 等后台请求不写入本地会话，未计入";
 
+/** 设置弹窗里各 Harness 数据源与环境变量的兜底说明。 */
+const HARNESS_SOURCE_HINTS: Record<
+  string,
+  { source: string; envHint: string }
+> = {
+  codebuddy: {
+    source: "~/.codebuddy/projects",
+    envHint: "CODEBUDDY_DATA_DIR 环境变量指定其他 projects 目录",
+  },
+  qoder: {
+    source: "~/.qoder-cn/projects",
+    envHint: "QODER_DATA_DIR 环境变量指定其他 projects 目录",
+  },
+  zcode: {
+    source: "~/.zcode/cli/db/db.sqlite",
+    envHint: "ZCODE_DATA_DIR 环境变量指定其他 .zcode 根目录（其下需有 cli/db/db.sqlite）",
+  },
+};
+
 function getChartNotice(
   metric: MetricKey,
   summary: UsageSummary,
@@ -625,10 +644,10 @@ export function UsageDashboard() {
                       </span>
                     </div>
                     <code className="mt-2 block break-all text-xs leading-5">
-                      {source?.source ?? (option.id === "qoder" ? "~/.qoder-cn/projects" : "~/.codebuddy/projects")}
+                      {source?.source ?? HARNESS_SOURCE_HINTS[option.id]?.source}
                     </code>
                     <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-                      可通过 {option.id === "qoder" ? "QODER_DATA_DIR" : "CODEBUDDY_DATA_DIR"} 环境变量指定其他 projects 目录。
+                      可通过 {HARNESS_SOURCE_HINTS[option.id]?.envHint}。
                     </p>
                   </div>
                 );
@@ -636,7 +655,7 @@ export function UsageDashboard() {
             </div>
             <div className="rounded-lg border border-border/70 p-3.5 text-xs leading-5 text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">统计说明</div>
-              Credits 采用各 Harness 原始字段，不按美元展示。Qoder 与其自身的会话积分统计一致，只计入服务端标记为计费（billable）的请求，不计费请求的报告值单独显示。不同 Harness 的 Credits 单位不同，全部视图中分别列出。{BACKGROUND_REQUEST_NOTE}，实际扣费以 Qoder 的 /usage 为准。请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。
+              Credits 采用各 Harness 原始字段，不按美元展示。Qoder 与其自身的会话积分统计一致，只计入服务端标记为计费（billable）的请求，不计费请求的报告值单独显示。不同 Harness 的 Credits 单位不同，全部视图中分别列出。{BACKGROUND_REQUEST_NOTE}，实际扣费以 Qoder 的 /usage 为准。请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。ZCode 数据来自其本地 SQLite 用量库（model_usage 表，仅保留最近 30 天），输入含缓存读写，无 Credits 字段；每行对应一次上游请求尝试（含重试），耗时为精确计时。
             </div>
           </div>
         </DialogContent>

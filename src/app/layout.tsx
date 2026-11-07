@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Y Token · AI Harness 用量统计",
-  description: "本地 CodeBuddy 与 Qoder Token、Credits 和请求用量统计面板",
+  description: "本地 CodeBuddy、Qoder 与 ZCode Token、Credits 和请求用量统计面板",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

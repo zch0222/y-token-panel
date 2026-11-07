@@ -37,6 +37,14 @@ $env:CODEBUDDY_DATA_DIR="D:\path\to\projects"
 npm run dev
 ~~~
 
+ZCode 数据源是其本地用量库（SQLite，只读打开）：
+
+~~~text
+~/.zcode/cli/db/db.sqlite（model_usage 表，join session 表取项目目录）
+~~~
+
+可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。读取该库需要 Node.js 22.5+（`node:sqlite`）；版本过低时仅跳过 ZCode 统计，其余 Harness 不受影响。注意 ZCode 自身只保留最近 30 天的用量行。
+
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 
 ## 统计口径

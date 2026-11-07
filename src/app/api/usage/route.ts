@@ -1,12 +1,17 @@
 import { connection, NextResponse } from "next/server";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readQoderUsage } from "@/lib/qoder";
+import { readZcodeUsage } from "@/lib/zcode";
 import type { UsageResponse } from "@/lib/usage";
 
 export async function GET() {
   await connection();
   try {
-    const results = await Promise.all([readCodeBuddyUsage(), readQoderUsage()]);
+    const results = await Promise.all([
+      readCodeBuddyUsage(),
+      readQoderUsage(),
+      readZcodeUsage(),
+    ]);
     const usage: UsageResponse = {
       records: results.flatMap((result) => result.records),
       sources: results.map(({ records, ...source }) => ({
