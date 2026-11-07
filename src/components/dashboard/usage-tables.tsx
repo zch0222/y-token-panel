@@ -32,12 +32,14 @@ import {
   formatCredits,
   formatPercent,
   formatTime,
+  getHarnessLabel,
   groupRecords,
   type GroupStat,
+  type HarnessId,
   type UsageRecord,
 } from "@/lib/usage";
 
-export type DetailTab = "logs" | "providers" | "models" | "projects";
+export type DetailTab = "logs" | "providers" | "models" | "projects" | "harnesses";
 
 interface UsageTablesProps {
   records: UsageRecord[];
@@ -58,6 +60,7 @@ const providerColors: Record<string, string> = {
   Volcengine: "bg-red-500/15 text-red-400",
   MiniMax: "bg-rose-500/15 text-rose-400",
   CodeBuddy: "bg-amber-500/15 text-amber-400",
+  Qoder: "bg-violet-500/15 text-violet-400",
 };
 
 function ProviderMark({ name, small = false }: { name: string; small?: boolean }) {
@@ -92,7 +95,14 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
 }
 
 function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: DetailTab }) {
-  const firstLabel = dimension === "models" ? "模型" : dimension === "providers" ? "供应商" : "项目";
+  const firstLabel =
+    dimension === "models"
+      ? "模型"
+      : dimension === "providers"
+        ? "供应商"
+        : dimension === "harnesses"
+          ? "Harness"
+          : "项目";
   return (
     <Table className="min-w-[840px]">
       <TableHeader>
@@ -114,40 +124,51 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
         {stats.length === 0 ? (
           <EmptyRow colSpan={7} />
         ) : (
-          stats.map((stat) => (
-            <TableRow key={stat.key} className="border-border/70 hover:bg-muted/35">
-              <TableCell className={cn(cellClass, "pl-6")}>
-                <div className="flex max-w-[300px] items-center gap-3">
-                  <ProviderMark
-                    name={dimension === "models" ? stat.key : dimension === "providers" ? stat.key : "CodeBuddy"}
-                    small={dimension !== "providers"}
-                  />
-                  <span
-                    className={cn("truncate", dimension !== "projects" && "font-mono text-xs")}
-                    title={stat.key}
-                  >
-                    {stat.key}
+          stats.map((stat) => {
+            const label =
+              dimension === "harnesses" ? getHarnessLabel(stat.key as HarnessId) : stat.key;
+            return (
+              <TableRow key={stat.key} className="border-border/70 hover:bg-muted/35">
+                <TableCell className={cn(cellClass, "pl-6")}>
+                  <div className="flex max-w-[300px] items-center gap-3">
+                    <ProviderMark
+                      name={dimension === "projects" ? "Y Token" : label}
+                      small={dimension !== "providers" && dimension !== "harnesses"}
+                    />
+                    <span
+                      className={cn(
+                        "truncate",
+                        dimension !== "projects" && dimension !== "harnesses" && "font-mono text-xs",
+                      )}
+                      title={label}
+                    >
+                      {label}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell className={cellClass}>{stat.requests.toLocaleString("zh-CN")}</TableCell>
+                <TableCell className={cn(cellClass, "font-medium")}>
+                  {formatCredits(stat.credits, stat.hasCredit)}
+                </TableCell>
+                <TableCell className={cellClass}>
+                  <span title={stat.hasTokens ? stat.tokens.toLocaleString("zh-CN") : "Token 数据未上报"}>
+                    {stat.hasTokens ? formatCompact(stat.tokens) : "—"}
                   </span>
-                </div>
-              </TableCell>
-              <TableCell className={cellClass}>{stat.requests.toLocaleString("zh-CN")}</TableCell>
-              <TableCell className={cn(cellClass, "font-medium")}>
-                {formatCredits(stat.credits, stat.hasCredit)}
-              </TableCell>
-              <TableCell className={cellClass}>
-                <span title={stat.tokens.toLocaleString("zh-CN")}>{formatCompact(stat.tokens)}</span>
-              </TableCell>
-              <TableCell className={cellClass}>{formatPercent(stat.cacheRate)}</TableCell>
-              <TableCell className={cellClass}>
-                <span className={stat.successRate >= 0.99 ? "text-emerald-500" : "text-amber-500"}>
-                  {formatPercent(stat.successRate)}
-                </span>
-              </TableCell>
-              <TableCell className={cn(cellClass, "pr-6 text-right text-muted-foreground")}>
-                {formatTime(stat.lastUsed)}
-              </TableCell>
-            </TableRow>
-          ))
+                </TableCell>
+                <TableCell className={cellClass}>
+                  {stat.cacheableInputTokens > 0 ? formatPercent(stat.cacheRate) : "—"}
+                </TableCell>
+                <TableCell className={cellClass}>
+                  <span className={stat.successRate >= 0.99 ? "text-emerald-500" : "text-amber-500"}>
+                    {formatPercent(stat.successRate)}
+                  </span>
+                </TableCell>
+                <TableCell className={cn(cellClass, "pr-6 text-right text-muted-foreground")}>
+                  {formatTime(stat.lastUsed)}
+                </TableCell>
+              </TableRow>
+            );
+          })
         )}
       </TableBody>
     </Table>
@@ -157,6 +178,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
 function exportCsv(records: UsageRecord[]) {
   const headers = [
     "时间",
+    "Harness",
     "项目",
     "供应商",
     "模型",
@@ -165,20 +187,23 @@ function exportCsv(records: UsageRecord[]) {
     "缓存读取 Tokens",
     "总 Tokens",
     "Credits",
+    "是否计费",
     "状态",
     "会话 ID",
   ];
   const escape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
   const rows = records.map((record) => [
     new Date(record.timestamp).toISOString(),
+    getHarnessLabel(record.harness),
     record.project,
     record.provider,
     record.model,
-    record.inputTokens,
-    record.outputTokens,
-    record.cacheReadTokens,
-    record.totalTokens,
+    record.hasTokenUsage ? record.inputTokens : "",
+    record.hasTokenUsage ? record.outputTokens : "",
+    record.hasTokenUsage ? record.cacheReadTokens : "",
+    record.hasTokenUsage ? record.totalTokens : "",
     record.hasCredit ? record.credits : "",
+    record.billable === undefined ? "" : record.billable ? "是" : "否",
     record.status,
     record.sessionId,
   ]);
@@ -187,7 +212,7 @@ function exportCsv(records: UsageRecord[]) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `codebuddy-usage-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `ai-harness-usage-${new Date().toISOString().slice(0, 10)}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -207,10 +232,11 @@ function RequestTable({
 
   return (
     <div>
-      <Table className="min-w-[1060px]">
+      <Table className="min-w-[1160px]">
         <TableHeader>
           <TableRow className="border-border/70 hover:bg-transparent">
             <TableHead className={cn(headClass, "pl-6")}>时间</TableHead>
+            <TableHead className={headClass}>Harness</TableHead>
             <TableHead className={headClass}>项目</TableHead>
             <TableHead className={headClass}>模型</TableHead>
             <TableHead className={cn(headClass, "text-right")}>输入</TableHead>
@@ -223,7 +249,7 @@ function RequestTable({
         </TableHeader>
         <TableBody>
           {rows.length === 0 ? (
-            <EmptyRow colSpan={9} />
+            <EmptyRow colSpan={10} />
           ) : (
             rows.map((record) => (
               <TableRow
@@ -239,6 +265,12 @@ function RequestTable({
                 <TableCell className={cn(cellClass, "pl-6 text-muted-foreground")}>
                   {formatTime(record.timestamp)}
                 </TableCell>
+                <TableCell className={cellClass}>
+                  <span className="inline-flex items-center gap-2">
+                    <ProviderMark name={getHarnessLabel(record.harness)} small />
+                    {getHarnessLabel(record.harness)}
+                  </span>
+                </TableCell>
                 <TableCell className={cellClass}>{record.project}</TableCell>
                 <TableCell className={cellClass}>
                   <div className="flex max-w-[230px] items-center gap-2.5">
@@ -248,13 +280,17 @@ function RequestTable({
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className={cn(cellClass, "text-right")}>{formatCompact(record.inputTokens)}</TableCell>
-                <TableCell className={cn(cellClass, "text-right")}>{formatCompact(record.outputTokens)}</TableCell>
+                <TableCell className={cn(cellClass, "text-right")}>
+                  {record.hasTokenUsage ? formatCompact(record.inputTokens) : "—"}
+                </TableCell>
+                <TableCell className={cn(cellClass, "text-right")}>
+                  {record.hasTokenUsage ? formatCompact(record.outputTokens) : "—"}
+                </TableCell>
                 <TableCell className={cn(cellClass, "text-right text-muted-foreground")}>
-                  {formatCompact(record.cacheReadTokens)}
+                  {record.hasTokenUsage ? formatCompact(record.cacheReadTokens) : "—"}
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right font-medium")}>
-                  {formatCompact(record.totalTokens)}
+                  {record.hasTokenUsage ? formatCompact(record.totalTokens) : "—"}
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
                   {formatCredits(record.credits, record.hasCredit)}
@@ -321,8 +357,10 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
   const models = groupRecords(records, "model");
   const providers = groupRecords(records, "provider");
   const projects = groupRecords(records, "project");
+  const harnesses = groupRecords(records, "harness");
   const tabItems: Array<{ id: DetailTab; label: string; count: number }> = [
     { id: "logs", label: "请求日志", count: records.length },
+    { id: "harnesses", label: "Harness", count: harnesses.length },
     { id: "providers", label: "供应商", count: providers.length },
     { id: "models", label: "模型", count: models.length },
     { id: "projects", label: "项目", count: projects.length },
@@ -368,6 +406,7 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
       </div>
 
       {tab === "logs" && <RequestTable records={records} onSelect={setSelected} />}
+      {tab === "harnesses" && <GroupTable stats={harnesses} dimension="harnesses" />}
       {tab === "providers" && <GroupTable stats={providers} dimension="providers" />}
       {tab === "models" && <GroupTable stats={models} dimension="models" />}
       {tab === "projects" && <GroupTable stats={projects} dimension="projects" />}
@@ -382,23 +421,51 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
                   <span className="font-mono text-sm">{selected.model}</span>
                 </DialogTitle>
                 <DialogDescription>
-                  {formatTime(selected.timestamp)} · {selected.project}
+                  {formatTime(selected.timestamp)} · {getHarnessLabel(selected.harness)} · {selected.project}
                 </DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-                <DetailItem label="输入 Tokens" value={selected.inputTokens.toLocaleString("zh-CN")} />
-                <DetailItem label="输出 Tokens" value={selected.outputTokens.toLocaleString("zh-CN")} />
-                <DetailItem label="总 Tokens" value={selected.totalTokens.toLocaleString("zh-CN")} />
-                <DetailItem label="缓存读取" value={selected.cacheReadTokens.toLocaleString("zh-CN")} />
-                <DetailItem label="缓存写入" value={selected.cacheCreationTokens.toLocaleString("zh-CN")} />
+                <DetailItem
+                  label="输入 Tokens"
+                  value={selected.hasTokenUsage ? selected.inputTokens.toLocaleString("zh-CN") : "未上报"}
+                />
+                <DetailItem
+                  label="输出 Tokens"
+                  value={selected.hasTokenUsage ? selected.outputTokens.toLocaleString("zh-CN") : "未上报"}
+                />
+                <DetailItem
+                  label="总 Tokens"
+                  value={selected.hasTokenUsage ? selected.totalTokens.toLocaleString("zh-CN") : "未上报"}
+                />
+                <DetailItem
+                  label="缓存读取"
+                  value={selected.hasTokenUsage ? selected.cacheReadTokens.toLocaleString("zh-CN") : "未上报"}
+                />
+                <DetailItem
+                  label="缓存写入"
+                  value={selected.hasTokenUsage ? selected.cacheCreationTokens.toLocaleString("zh-CN") : "未上报"}
+                />
                 <DetailItem label="Credits" value={formatCredits(selected.credits, selected.hasCredit)} />
               </div>
               <div className="space-y-2.5">
+                {selected.billable !== undefined && (
+                  <DetailItem label="计费状态" value={selected.billable ? "计费" : "不计费"} />
+                )}
+                {selected.contextUsageRatio !== undefined && (
+                  <DetailItem
+                    label="请求时上下文占用"
+                    value={formatPercent(selected.contextUsageRatio)}
+                  />
+                )}
                 <DetailItem label="会话 ID" value={selected.sessionId} mono />
                 <DetailItem label="请求 ID" value={selected.requestId} mono />
               </div>
               <p className="text-xs leading-5 text-muted-foreground">
-                总 Tokens 采用 CodeBuddy 原始 total_tokens 字段；输入 Tokens 已包含缓存读取，不重复累计。
+                {selected.hasTokenUsage
+                  ? selected.inputTokenSemantics === "fresh"
+                    ? "输入 Tokens 不包含缓存读写；总 Tokens 已合并输入、输出与缓存读写。"
+                    : "输入 Tokens 已包含缓存读取；总 Tokens 采用原始 total_tokens，不重复累计。"
+                  : "该 Harness 的本地记录未提供有效 Token 数值，仅展示 Credits 与请求信息。"}
               </p>
             </>
           )}

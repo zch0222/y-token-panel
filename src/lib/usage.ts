@@ -1,11 +1,20 @@
+export const HARNESS_OPTIONS = [
+  { id: "codebuddy", label: "CodeBuddy", description: "CodeBuddy CLI 本地会话" },
+  { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
+] as const;
+
+export type HarnessId = (typeof HARNESS_OPTIONS)[number]["id"];
+export type HarnessFilter = "all" | HarnessId;
 export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all";
 export type MetricKey = "credits" | "requests" | "tokens" | "cacheRate";
-export type GroupDimension = "model" | "provider" | "project";
+export type GroupDimension = "model" | "provider" | "project" | "harness";
+export type InputTokenSemantics = "fresh" | "total";
 
 export interface UsageRecord {
   id: string;
   requestId: string;
   sessionId: string;
+  harness: HarnessId;
   project: string;
   model: string;
   provider: string;
@@ -15,18 +24,34 @@ export interface UsageRecord {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   totalTokens: number;
+  inputTokenSemantics: InputTokenSemantics;
+  hasTokenUsage: boolean;
   credits: number;
   hasCredit: boolean;
+  billable?: boolean;
+  contextUsageRatio?: number;
   status: "success" | "error";
+}
+
+export interface HarnessUsage {
+  harness: HarnessId;
+  records: UsageRecord[];
+  scannedFiles: number;
+  skippedFiles: number;
+  source: string;
+  sourceAvailable: boolean;
+}
+
+export interface UsageSource extends Omit<HarnessUsage, "records"> {
+  recordCount: number;
 }
 
 export interface UsageResponse {
   records: UsageRecord[];
+  sources: UsageSource[];
   scannedFiles: number;
   skippedFiles: number;
   syncedAt: number;
-  source: string;
-  sourceAvailable: boolean;
 }
 
 export interface UsageSummary {
@@ -34,9 +59,11 @@ export interface UsageSummary {
   credits: number;
   hasCredit: boolean;
   tokens: number;
+  hasTokens: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheableInputTokens: number;
   cacheRate: number;
   successRate: number;
 }
@@ -56,6 +83,7 @@ export interface TrendPoint {
   cacheRate: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheableInputTokens: number;
 }
 
 export const RANGE_OPTIONS: Array<{ value: RangeKey; label: string }> = [
@@ -91,6 +119,7 @@ export function filterUsageRecords(
   provider = "all",
   model = "all",
   now = new Date(),
+  harness: HarnessFilter = "all",
 ): UsageRecord[] {
   const { start, end } = getRangeBounds(range, now);
   return records
@@ -98,11 +127,17 @@ export function filterUsageRecords(
       (record) =>
         record.timestamp >= start &&
         record.timestamp <= end &&
+        (harness === "all" || record.harness === harness) &&
         (project === "all" || record.project === project) &&
         (provider === "all" || record.provider === provider) &&
         (model === "all" || record.model === model),
     )
     .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function getCacheableInputTokens(record: UsageRecord): number {
+  if (record.inputTokenSemantics === "total") return record.inputTokens;
+  return record.inputTokens + record.cacheReadTokens + record.cacheCreationTokens;
 }
 
 export function summarizeRecords(records: UsageRecord[]): UsageSummary {
@@ -111,16 +146,22 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     (sum, record) => sum + record.cacheReadTokens,
     0,
   );
+  const cacheableInputTokens = records.reduce(
+    (sum, record) => sum + getCacheableInputTokens(record),
+    0,
+  );
   const successful = records.filter((record) => record.status === "success").length;
   return {
     requests: records.length,
     credits: records.reduce((sum, record) => sum + record.credits, 0),
     hasCredit: records.some((record) => record.hasCredit),
     tokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
+    hasTokens: records.some((record) => record.hasTokenUsage),
     inputTokens,
     outputTokens: records.reduce((sum, record) => sum + record.outputTokens, 0),
     cacheReadTokens,
-    cacheRate: inputTokens > 0 ? cacheReadTokens / inputTokens : 0,
+    cacheableInputTokens,
+    cacheRate: cacheableInputTokens > 0 ? cacheReadTokens / cacheableInputTokens : 0,
     successRate: records.length > 0 ? successful / records.length : 0,
   };
 }
@@ -159,6 +200,7 @@ function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
     cacheRate: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
+    cacheableInputTokens: 0,
   };
 }
 
@@ -217,11 +259,15 @@ export function buildTrend(
     point.credits += record.credits;
     point.inputTokens += record.inputTokens;
     point.cacheReadTokens += record.cacheReadTokens;
+    point.cacheableInputTokens += getCacheableInputTokens(record);
   }
 
   return Array.from(points.values()).map((point) => ({
     ...point,
-    cacheRate: point.inputTokens > 0 ? point.cacheReadTokens / point.inputTokens : 0,
+    cacheRate:
+      point.cacheableInputTokens > 0
+        ? point.cacheReadTokens / point.cacheableInputTokens
+        : 0,
   }));
 }
 
@@ -276,6 +322,10 @@ export function formatTime(timestamp: number): string {
   });
 }
 
+export function getHarnessLabel(harness: HarnessId): string {
+  return HARNESS_OPTIONS.find((option) => option.id === harness)?.label ?? harness;
+}
+
 export function getProjectLabel(directory: string): string {
-  return directory.replace(/^[a-z]-code-/i, "") || directory;
+  return directory.replace(/^[a-z]--?code-/i, "") || directory;
 }

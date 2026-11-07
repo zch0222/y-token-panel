@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Boxes,
+  Blocks,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
@@ -18,7 +19,7 @@ import {
   type UsageSummary,
 } from "@/lib/usage";
 
-export type DashboardView = "overview" | "logs" | "models" | "projects";
+export type DashboardView = "overview" | "logs" | "models" | "projects" | "harnesses";
 
 interface SidebarProps {
   view: DashboardView;
@@ -33,6 +34,7 @@ const navigation = [
   { id: "overview" as const, label: "用量概览", icon: LayoutDashboard },
   { id: "logs" as const, label: "请求日志", icon: ListChecks },
   { id: "models" as const, label: "模型分析", icon: Boxes },
+  { id: "harnesses" as const, label: "Harness 对比", icon: Blocks },
   { id: "projects" as const, label: "项目统计", icon: FolderKanban },
 ];
 
@@ -63,7 +65,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="min-w-0">
             <div className="text-[15px] font-semibold tracking-[0.12em]">Y TOKEN</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">CodeBuddy CLI</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">AI Harness Monitor</div>
           </div>
         )}
       </div>
@@ -112,7 +114,8 @@ export function Sidebar({
               {formatCredits(today.credits, today.hasCredit)}
             </div>
             <div className="mt-1.5 text-[11px] text-muted-foreground">
-              {formatCompact(today.tokens)} Tokens · {today.requests} 次请求
+              {today.hasTokens ? `${formatCompact(today.tokens)} Tokens · ` : ""}
+              {today.requests} 次请求
             </div>
           </div>
         ) : (

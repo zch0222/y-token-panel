@@ -1,11 +1,12 @@
+import "server-only";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
   deriveProvider,
   getProjectLabel,
+  type HarnessUsage,
   type UsageRecord,
-  type UsageResponse,
 } from "@/lib/usage";
 
 interface MessageUsage {
@@ -134,9 +135,10 @@ function parseSessionLine(
   const failedStatuses = new Set(["error", "failed", "cancelled", "canceled"]);
 
   return {
-    id: `${sessionId}:${id}`,
+    id: `codebuddy:${sessionId}:${id}`,
     requestId: providerData?.conversationRequestId ?? id,
     sessionId,
+    harness: "codebuddy",
     project,
     model,
     provider: deriveProvider(model),
@@ -146,13 +148,20 @@ function parseSessionLine(
     cacheReadTokens,
     cacheCreationTokens,
     totalTokens,
+    inputTokenSemantics: "total",
+    hasTokenUsage:
+      firstNumber(
+        messageUsage?.total_tokens,
+        rawUsage?.total_tokens,
+        providerData?.usage?.totalTokens,
+      ) !== undefined || totalTokens > 0,
     credits: credits ?? 0,
     hasCredit: credits !== undefined,
     status: failedStatuses.has(record.status?.toLowerCase() ?? "") ? "error" : "success",
   };
 }
 
-export async function readCodeBuddyUsage(): Promise<UsageResponse> {
+export async function readCodeBuddyUsage(): Promise<HarnessUsage> {
   const source = process.env.CODEBUDDY_DATA_DIR
     ? path.resolve(process.env.CODEBUDDY_DATA_DIR)
     : path.join(homedir(), ".codebuddy", "projects");
@@ -167,10 +176,10 @@ export async function readCodeBuddyUsage(): Promise<UsageResponse> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {
+        harness: "codebuddy",
         records: [],
         scannedFiles: 0,
         skippedFiles: 0,
-        syncedAt: Date.now(),
         source,
         sourceAvailable: false,
       };
@@ -216,10 +225,10 @@ export async function readCodeBuddyUsage(): Promise<UsageResponse> {
 
   records.sort((a, b) => b.timestamp - a.timestamp);
   return {
+    harness: "codebuddy",
     records,
     scannedFiles,
     skippedFiles,
-    syncedAt: Date.now(),
     source,
     sourceAvailable: true,
   };

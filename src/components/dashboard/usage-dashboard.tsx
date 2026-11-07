@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
@@ -39,8 +40,11 @@ import {
   formatCompact,
   formatCredits,
   formatPercent,
+  getHarnessLabel,
+  HARNESS_OPTIONS,
   RANGE_OPTIONS,
   summarizeRecords,
+  type HarnessFilter,
   type MetricKey,
   type RangeKey,
   type UsageResponse,
@@ -98,10 +102,11 @@ function MetricCard({
 }
 
 const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
-  overview: { title: "用量统计", subtitle: "追踪 CodeBuddy CLI 的 Token 使用与消耗" },
-  logs: { title: "请求日志", subtitle: "查看每一次模型调用的 Token 明细" },
+  overview: { title: "用量统计", subtitle: "集中追踪 AI Harness 的 Token、Credits 与请求" },
+  logs: { title: "请求日志", subtitle: "查看每一次模型调用的本地用量明细" },
   models: { title: "模型分析", subtitle: "比较不同模型的使用量与缓存效率" },
-  projects: { title: "项目统计", subtitle: "了解各项目的 CodeBuddy 使用情况" },
+  projects: { title: "项目统计", subtitle: "了解各项目在不同 Harness 中的使用情况" },
+  harnesses: { title: "Harness 对比", subtitle: "比较不同 AI Harness 的请求与消耗" },
 };
 
 export function UsageDashboard() {
@@ -110,6 +115,7 @@ export function UsageDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<RangeKey>("today");
+  const [harness, setHarness] = useState<HarnessFilter>("all");
   const [project, setProject] = useState("all");
   const [provider, setProvider] = useState("all");
   const [model, setModel] = useState("all");
@@ -161,52 +167,79 @@ export function UsageDashboard() {
 
   const records = useMemo(() => data?.records ?? [], [data]);
   const referenceTime = useMemo(() => new Date(data?.syncedAt ?? 0), [data]);
+  const harnessRecords = useMemo(
+    () => records.filter((record) => harness === "all" || record.harness === harness),
+    [records, harness],
+  );
   const filteredRecords = useMemo(
-    () => filterUsageRecords(records, range, project, provider, model, referenceTime),
-    [records, range, project, provider, model, referenceTime],
+    () => filterUsageRecords(records, range, project, provider, model, referenceTime, harness),
+    [records, range, project, provider, model, referenceTime, harness],
   );
   const summary = useMemo(() => summarizeRecords(filteredRecords), [filteredRecords]);
   const today = useMemo(
-    () => summarizeRecords(filterUsageRecords(records, "today", "all", "all", "all", referenceTime)),
-    [records, referenceTime],
+    () =>
+      summarizeRecords(
+        filterUsageRecords(records, "today", "all", "all", "all", referenceTime, harness),
+      ),
+    [records, referenceTime, harness],
   );
   const trend = useMemo(
     () => buildTrend(filteredRecords, range, referenceTime),
     [filteredRecords, range, referenceTime],
   );
+  const activeSources = useMemo(
+    () =>
+      data?.sources.filter((source) => harness === "all" || source.harness === harness) ?? [],
+    [data, harness],
+  );
 
   const projects = useMemo(
-    () => Array.from(new Set(records.map((record) => record.project))).sort(),
-    [records],
+    () => Array.from(new Set(harnessRecords.map((record) => record.project))).sort(),
+    [harnessRecords],
   );
   const providers = useMemo(
-    () => Array.from(new Set(records.map((record) => record.provider))).sort(),
-    [records],
+    () => Array.from(new Set(harnessRecords.map((record) => record.provider))).sort(),
+    [harnessRecords],
   );
   const models = useMemo(
     () =>
       Array.from(
         new Set(
-          records
+          harnessRecords
             .filter((record) => provider === "all" || record.provider === provider)
             .map((record) => record.model),
         ),
       ).sort(),
-    [records, provider],
+    [harnessRecords, provider],
   );
 
-  const hasFilters = range !== "today" || project !== "all" || provider !== "all" || model !== "all";
-  const clearFilters = () => {
-    setRange("today");
+  const changeHarness = (next: HarnessFilter) => {
+    setHarness(next);
     setProject("all");
     setProvider("all");
     setModel("all");
+    setMetric(next === "qoder" ? "credits" : "tokens");
+  };
+  const hasFilters =
+    range !== "today" ||
+    harness !== "all" ||
+    project !== "all" ||
+    provider !== "all" ||
+    model !== "all";
+  const clearFilters = () => {
+    setRange("today");
+    setHarness("all");
+    setProject("all");
+    setProvider("all");
+    setModel("all");
+    setMetric("tokens");
   };
   const changeView = (next: DashboardView) => {
     setView(next);
     if (next === "logs") setTab("logs");
     if (next === "models") setTab("models");
     if (next === "projects") setTab("projects");
+    if (next === "harnesses") setTab("harnesses");
     if (next === "overview") setTab("models");
   };
   const syncLabel = useMemo(() => {
@@ -223,7 +256,7 @@ export function UsageDashboard() {
         collapsed={collapsed}
         onCollapsedChange={setCollapsed}
         today={today}
-        connected={Boolean(data?.sourceAvailable && !error)}
+        connected={Boolean(activeSources.some((source) => source.sourceAvailable) && !error)}
       />
 
       <main className="min-w-0 flex-1">
@@ -275,6 +308,13 @@ export function UsageDashboard() {
         </header>
 
         <div className="mx-auto w-full max-w-[1500px] px-4 py-5 sm:px-6 sm:py-6">
+          <HarnessSwitcher
+            value={harness}
+            sources={data?.sources ?? []}
+            loading={loading}
+            onChange={changeHarness}
+          />
+
           <div className="mb-5 flex flex-wrap items-center gap-2">
             <Select value={range} onValueChange={(value) => setRange((value as RangeKey | null) ?? "today")}>
               <SelectTrigger className="h-9 min-w-[118px] border-border bg-card text-xs" aria-label="时间范围">
@@ -355,10 +395,16 @@ export function UsageDashboard() {
           {error && (
             <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               <CircleAlert className="size-4 shrink-0" />
-              <span className="flex-1">{error}，请确认 CodeBuddy 本地数据目录可访问。</span>
+              <span className="flex-1">{error}，请确认本地数据目录可访问。</span>
               <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
                 重试
               </Button>
+            </div>
+          )}
+
+          {!loading && activeSources.some((source) => !source.sourceAvailable) && (
+            <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-xs leading-5 text-amber-500">
+              未找到 {activeSources.filter((source) => !source.sourceAvailable).map((source) => getHarnessLabel(source.harness)).join("、")} 的数据目录；其他 Harness 的统计不受影响。
             </div>
           )}
 
@@ -375,10 +421,10 @@ export function UsageDashboard() {
                 ) : (
                   <>
                     <MetricCard
-                      label="总消耗"
+                      label="总 Credits"
                       value={formatCredits(summary.credits, summary.hasCredit)}
                       suffix={summary.hasCredit ? "credits" : undefined}
-                      hint="来自 CodeBuddy 原始 credit 字段，不代表美元金额"
+                      hint="各 Harness 本地日志报告的原始 Credits，不代表美元金额"
                       selected={metric === "credits"}
                       onClick={() => setMetric("credits")}
                       className="border-b border-r md:border-b-0"
@@ -386,38 +432,58 @@ export function UsageDashboard() {
                     <MetricCard
                       label="总请求数"
                       value={summary.requests.toLocaleString("zh-CN")}
-                      hint="带有 Token 用量信息的 CodeBuddy API 调用次数"
+                      hint="按上游请求 ID 去重后的本地模型调用次数"
                       selected={metric === "requests"}
                       onClick={() => setMetric("requests")}
                       className="border-b md:border-b-0 md:border-r"
                     />
                     <MetricCard
                       label="真实消耗 Tokens"
-                      value={formatCompact(summary.tokens)}
-                      hint="采用原始 total_tokens；输入中已包含缓存读取，不重复计数"
+                      value={summary.hasTokens ? formatCompact(summary.tokens) : "—"}
+                      hint={
+                        summary.hasTokens
+                          ? "按各 Harness 的输入与缓存语义归一统计，不重复计数"
+                          : "当前本地日志未提供有效 Token 数值"
+                      }
                       selected={metric === "tokens"}
                       onClick={() => setMetric("tokens")}
                       className="border-r"
                     />
                     <MetricCard
                       label="缓存命中率"
-                      value={formatPercent(summary.cacheRate)}
-                      hint="缓存读取 Tokens ÷ 输入 Tokens"
+                      value={
+                        summary.cacheableInputTokens > 0
+                          ? formatPercent(summary.cacheRate)
+                          : "—"
+                      }
+                      hint="缓存读取 Tokens ÷ 可缓存输入 Tokens"
                       selected={metric === "cacheRate"}
                       onClick={() => setMetric("cacheRate")}
                     />
                   </>
                 )}
               </div>
-              {!loading && (
-                <UsageChart
-                  data={trend}
-                  metric={metric}
-                  hourly={range === "today" || range === "yesterday"}
-                  chartType={chartType}
-                  onChartTypeChange={setChartType}
-                />
-              )}
+              {!loading &&
+                ((metric === "tokens" && !summary.hasTokens) ||
+                (metric === "cacheRate" && summary.cacheableInputTokens === 0) ? (
+                  <div className="flex h-[292px] flex-col items-center justify-center border-t border-border/70 px-6 text-center">
+                    <CircleHelp className="mb-3 size-7 text-muted-foreground/50" strokeWidth={1.5} />
+                    <div className="text-sm font-medium">当前范围没有可用的 Token 数据</div>
+                    <p className="mt-1.5 max-w-md text-xs leading-5 text-muted-foreground">
+                      {harness === "qoder"
+                        ? "Qoder 当前本地日志只报告 Credits 和请求信息，Token 字段未提供有效数值。"
+                        : "切换到 Credits 或请求数查看趋势，或选择包含 Token 记录的其他 Harness。"}
+                    </p>
+                  </div>
+                ) : (
+                  <UsageChart
+                    data={trend}
+                    metric={metric}
+                    hourly={range === "today" || range === "yesterday"}
+                    chartType={chartType}
+                    onChartTypeChange={setChartType}
+                  />
+                ))}
             </section>
           )}
 
@@ -438,14 +504,20 @@ export function UsageDashboard() {
               <Database className="size-3" /> 数据仅在本机读取，不会上传会话内容
             </span>
             <span>
-              {data ? `已扫描 ${data.scannedFiles} 个会话文件${data.skippedFiles ? ` · ${data.skippedFiles} 个读取失败` : ""}` : "正在连接本地数据"}
+              {data
+                ? `已扫描 ${activeSources.reduce((sum, source) => sum + source.scannedFiles, 0)} 个会话文件${
+                    activeSources.some((source) => source.skippedFiles > 0)
+                      ? ` · ${activeSources.reduce((sum, source) => sum + source.skippedFiles, 0)} 个读取失败`
+                      : ""
+                  }`
+                : "正在连接本地数据"}
             </span>
           </footer>
         </div>
       </main>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="sm:max-w-[480px]">
+        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle>用量设置</DialogTitle>
             <DialogDescription>配置本地数据刷新方式与查看统计口径。</DialogDescription>
@@ -470,18 +542,31 @@ export function UsageDashboard() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="rounded-lg border border-border/70 bg-muted/20 p-3.5">
-              <div className="text-xs font-medium text-muted-foreground">数据源</div>
-              <code className="mt-2 block break-all text-xs leading-5">
-                {data?.source ?? "~/.codebuddy/projects"}
-              </code>
-              <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-                可通过 CODEBUDDY_DATA_DIR 环境变量指定其他 CodeBuddy projects 目录。
-              </p>
+            <div className="space-y-2.5">
+              <div className="text-xs font-medium text-muted-foreground">本地数据源</div>
+              {HARNESS_OPTIONS.map((option) => {
+                const source = data?.sources.find((candidate) => candidate.harness === option.id);
+                return (
+                  <div key={option.id} className="rounded-lg border border-border/70 bg-muted/20 p-3.5">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-medium">{option.label}</span>
+                      <span className={source?.sourceAvailable ? "text-emerald-500" : "text-muted-foreground"}>
+                        {source ? source.sourceAvailable ? `${source.recordCount} 条请求` : "目录不可用" : "等待扫描"}
+                      </span>
+                    </div>
+                    <code className="mt-2 block break-all text-xs leading-5">
+                      {source?.source ?? (option.id === "qoder" ? "~/.qoder-cn/projects" : "~/.codebuddy/projects")}
+                    </code>
+                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                      可通过 {option.id === "qoder" ? "QODER_DATA_DIR" : "CODEBUDDY_DATA_DIR"} 环境变量指定其他 projects 目录。
+                    </p>
+                  </div>
+                );
+              })}
             </div>
             <div className="rounded-lg border border-border/70 p-3.5 text-xs leading-5 text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">统计说明</div>
-              Credits 是 CodeBuddy 原始 credit 字段，不按美元展示。总 Tokens 使用 total_tokens，缓存命中率为缓存读取 ÷ 输入 Tokens。
+              Credits 采用各 Harness 原始字段，不按美元展示；请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。
             </div>
           </div>
         </DialogContent>

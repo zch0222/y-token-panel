@@ -1,0 +1,194 @@
+import "server-only";
+import { readdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import {
+  getProjectLabel,
+  type HarnessUsage,
+  type UsageRecord,
+} from "@/lib/usage";
+
+interface QoderMessageUsage {
+  request_id?: string;
+  input_tokens?: number | string;
+  output_tokens?: number | string;
+  total_tokens?: number | string;
+  cache_read_input_tokens?: number | string;
+  cache_creation_input_tokens?: number | string;
+  credits?: number | string;
+  original_credits?: number | string;
+  billable?: boolean;
+  context_usage_ratio?: number | string;
+}
+
+interface QoderSessionRecord {
+  type?: string;
+  uuid?: string;
+  timestamp?: number | string;
+  sessionId?: string;
+  status?: string;
+  isApiErrorMessage?: boolean;
+  message?: {
+    id?: string;
+    model?: string;
+    stop_reason?: string;
+    usage?: QoderMessageUsage;
+  };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = finiteNumber(value);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function parseTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+  return undefined;
+}
+
+function parseSessionLine(
+  line: string,
+  project: string,
+  file: string,
+  lineIndex: number,
+): UsageRecord | null {
+  let record: QoderSessionRecord;
+  try {
+    record = JSON.parse(line) as QoderSessionRecord;
+  } catch {
+    return null;
+  }
+
+  const usage = record.message?.usage;
+  if (!usage) return null;
+  const timestamp = parseTimestamp(record.timestamp);
+  if (timestamp === undefined) return null;
+
+  const inputTokens = firstNumber(usage.input_tokens) ?? 0;
+  const outputTokens = firstNumber(usage.output_tokens) ?? 0;
+  const cacheReadTokens = firstNumber(usage.cache_read_input_tokens) ?? 0;
+  const cacheCreationTokens = firstNumber(usage.cache_creation_input_tokens) ?? 0;
+  const totalTokens =
+    firstNumber(usage.total_tokens) ??
+    inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  const credits = firstNumber(usage.credits, usage.original_credits);
+  const sessionId = record.sessionId ?? path.basename(file, ".jsonl");
+  const fallbackId = record.message?.id ?? record.uuid ?? `${file}:${lineIndex}`;
+  const requestId = usage.request_id ?? fallbackId;
+  const failedStatuses = new Set(["error", "failed", "cancelled", "canceled"]);
+
+  return {
+    id: `qoder:${requestId}`,
+    requestId,
+    sessionId,
+    harness: "qoder",
+    project,
+    model: record.message?.model ?? "未知模型",
+    provider: "Qoder",
+    timestamp,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    totalTokens,
+    inputTokenSemantics: "fresh",
+    hasTokenUsage: totalTokens > 0,
+    credits: credits ?? 0,
+    hasCredit: credits !== undefined,
+    billable: usage.billable,
+    contextUsageRatio: finiteNumber(usage.context_usage_ratio),
+    status:
+      record.isApiErrorMessage ||
+      failedStatuses.has(record.status?.toLowerCase() ?? "") ||
+      record.message?.stop_reason === "error"
+        ? "error"
+        : "success",
+  };
+}
+
+export async function readQoderUsage(): Promise<HarnessUsage> {
+  const source = process.env.QODER_DATA_DIR
+    ? path.resolve(process.env.QODER_DATA_DIR)
+    : path.join(homedir(), ".qoder-cn", "projects");
+  const records: UsageRecord[] = [];
+  const seen = new Set<string>();
+  let scannedFiles = 0;
+  let skippedFiles = 0;
+  let sourceAvailable = true;
+
+  async function scanDirectory(directory: string, project: string, isRoot = false) {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isRoot && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        sourceAvailable = false;
+        return;
+      }
+      if (isRoot) throw error;
+      skippedFiles += 1;
+      return;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await scanDirectory(
+          entryPath,
+          project || getProjectLabel(entry.name),
+        );
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+
+      scannedFiles += 1;
+      try {
+        const content = await readFile(entryPath, "utf8");
+        const lines = content.split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+          if (!lines[index].trim()) continue;
+          const record = parseSessionLine(
+            lines[index],
+            project || "未知项目",
+            entry.name,
+            index,
+          );
+          if (!record || seen.has(record.id)) continue;
+          seen.add(record.id);
+          records.push(record);
+        }
+      } catch {
+        skippedFiles += 1;
+      }
+    }
+  }
+
+  await scanDirectory(source, "", true);
+  records.sort((a, b) => b.timestamp - a.timestamp);
+  return {
+    harness: "qoder",
+    records,
+    scannedFiles,
+    skippedFiles,
+    source,
+    sourceAvailable,
+  };
+}
