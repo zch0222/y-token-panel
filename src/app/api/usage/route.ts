@@ -4,6 +4,7 @@ import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
 import { readKcodeUsage } from "@/lib/kcode";
 import { readQoderUsage } from "@/lib/qoder";
+import { readWorkBuddyUsage } from "@/lib/workbuddy";
 import { readZcodeUsage } from "@/lib/zcode";
 import type { UsageResponse } from "@/lib/usage";
 
@@ -12,6 +13,7 @@ export async function GET() {
   try {
     const results = await Promise.all([
       readCodeBuddyUsage(),
+      readWorkBuddyUsage(),
       readQoderUsage(),
       readZcodeUsage(),
       readKcodeUsage(),

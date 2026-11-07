@@ -2,6 +2,7 @@ import { sumSpeedTotals } from "@/lib/speed";
 
 export const HARNESS_OPTIONS = [
   { id: "codebuddy", label: "CodeBuddy", description: "CodeBuddy CLI 本地会话" },
+  { id: "workbuddy", label: "WorkBuddy", description: "WorkBuddy Desktop / CLI 本地会话" },
   { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
   { id: "zcode", label: "ZCode", description: "ZCode Desktop / CLI 本地会话" },
   { id: "kcode", label: "KCode", description: "Kimi Code Desktop / CLI 本地会话" },

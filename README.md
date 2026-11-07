@@ -37,6 +37,14 @@ $env:CODEBUDDY_DATA_DIR="D:\path\to\projects"
 npm run dev
 ~~~
 
+WorkBuddy（CodeBuddy 衍生的桌面 / CLI agent）数据源同样是本地会话 JSONL：
+
+~~~text
+~/.workbuddy/projects/<压缩 cwd>/<会话>.jsonl（子 agent 在 <父会话>/subagents/ 下）
+~~~
+
+可以通过 **WORKBUDDY_CONFIG_DIR**（与 WorkBuddy 自身的环境变量一致）指定另一个 `.workbuddy` 根目录（其下需有 `projects`），或用 **WORKBUDDY_DATA_DIR** 覆盖。字段语义按本机 WorkBuddy 2.137.1 的 CLI bundle（@genie/agent-cli 2.165.0）反查确认：用量在 `message`（assistant）/ `function_call` 条目的 `providerData`（归一化 `usage` + 提供方原始 `rawUsage`），Responses API 走独立 `model-usage` 事实条目；`usage.inputTokens` 是含缓存的总输入（total 口径），缓存读写按官方 `getCacheReadTokens` / `getCacheCreationTokens` 回退链取第一个正数（DeepSeek 的 `prompt_cache_miss_tokens` 计入缓存写入）；`rawUsage.credit` 是服务端逐请求上报的计费 Credits。同一 id 会先落无 usage 行、响应结束补全后重写，按 last-wins 去重；credits 按 `messageId` 去重后与 WorkBuddy 自身 workbuddy.db `session_usage.credit_json` 的聚合精确一致（本机实测对账相等）。项目目录直下 `agent-` 前缀的遗留文件跳过，`subagents/` 下的子 agent 用量计入。转录里没有单请求延迟，耗时沿 `parentId` 父链回溯到请求边界估算（含首字等待）。
+
 ZCode 数据源是其本地用量库（SQLite，只读打开）：
 
 ~~~text

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Layers, Moon, Sparkles, SquareTerminal, Telescope, Zap, type LucideIcon } from "lucide-react";
+import { Bot, Briefcase, Layers, Moon, Sparkles, SquareTerminal, Telescope, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   HARNESS_OPTIONS,
@@ -19,6 +19,7 @@ interface HarnessSwitcherProps {
 const icons: Record<"all" | HarnessId, LucideIcon> = {
   all: Layers,
   codebuddy: SquareTerminal,
+  workbuddy: Briefcase,
   qoder: Bot,
   zcode: Zap,
   kcode: Moon,
@@ -29,6 +30,7 @@ const icons: Record<"all" | HarnessId, LucideIcon> = {
 const iconStyles: Record<"all" | HarnessId, string> = {
   all: "bg-sky-500/12 text-sky-500",
   codebuddy: "bg-amber-500/12 text-amber-500",
+  workbuddy: "bg-lime-500/12 text-lime-600",
   qoder: "bg-violet-500/12 text-violet-400",
   zcode: "bg-emerald-500/12 text-emerald-400",
   kcode: "bg-rose-500/12 text-rose-400",
