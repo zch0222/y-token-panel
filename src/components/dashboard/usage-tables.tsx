@@ -11,6 +11,7 @@ import {
   FileClock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import {
   Dialog,
   DialogContent,
@@ -113,7 +114,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
               请求数 <ArrowDown className="size-3" />
             </span>
           </TableHead>
-          <TableHead className={headClass}>消耗 Credits</TableHead>
+          <TableHead className={headClass}>计费 Credits</TableHead>
           <TableHead className={headClass}>Tokens</TableHead>
           <TableHead className={headClass}>缓存命中率</TableHead>
           <TableHead className={headClass}>成功率</TableHead>
@@ -148,7 +149,18 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
                 </TableCell>
                 <TableCell className={cellClass}>{stat.requests.toLocaleString("zh-CN")}</TableCell>
                 <TableCell className={cn(cellClass, "font-medium")}>
-                  {formatCredits(stat.credits, stat.hasCredit)}
+                  {stat.mixedCreditUnits ? (
+                    <CreditBreakdown items={stat.creditsByHarness} className="max-w-[180px] text-xs" />
+                  ) : (
+                    <>
+                      {formatCredits(stat.credits, stat.hasCredit)}
+                      {stat.unbilledCredits > 0 && (
+                        <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">
+                          另有 {formatCredits(stat.unbilledCredits)} 未计费
+                        </div>
+                      )}
+                    </>
+                  )}
                 </TableCell>
                 <TableCell className={cellClass}>
                   <span title={stat.hasTokens ? stat.tokens.toLocaleString("zh-CN") : "Token 数据未上报"}>
@@ -186,7 +198,8 @@ function exportCsv(records: UsageRecord[]) {
     "输出 Tokens",
     "缓存读取 Tokens",
     "总 Tokens",
-    "Credits",
+    "计费 Credits",
+    "服务端报告 Credits",
     "是否计费",
     "状态",
     "会话 ID",
@@ -203,6 +216,7 @@ function exportCsv(records: UsageRecord[]) {
     record.hasTokenUsage ? record.cacheReadTokens : "",
     record.hasTokenUsage ? record.totalTokens : "",
     record.hasCredit ? record.credits : "",
+    record.reportedCredits ?? "",
     record.billable === undefined ? "" : record.billable ? "是" : "否",
     record.status,
     record.sessionId,
@@ -293,7 +307,16 @@ function RequestTable({
                   {record.hasTokenUsage ? formatCompact(record.totalTokens) : "—"}
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
-                  {formatCredits(record.credits, record.hasCredit)}
+                  {record.billable === false ? (
+                    <span
+                      className="text-muted-foreground"
+                      title={`服务端报告 ${formatCredits(record.reportedCredits ?? 0)} Credits，标记为不计费`}
+                    >
+                      未计费
+                    </span>
+                  ) : (
+                    formatCredits(record.credits, record.hasCredit)
+                  )}
                 </TableCell>
                 <TableCell className={cn(cellClass, "pr-6 text-right")}>
                   {record.status === "success" ? (
@@ -445,11 +468,17 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
                   label="缓存写入"
                   value={selected.hasTokenUsage ? selected.cacheCreationTokens.toLocaleString("zh-CN") : "未上报"}
                 />
-                <DetailItem label="Credits" value={formatCredits(selected.credits, selected.hasCredit)} />
+                <DetailItem label="计费 Credits" value={formatCredits(selected.credits, selected.hasCredit)} />
               </div>
               <div className="space-y-2.5">
                 {selected.billable !== undefined && (
                   <DetailItem label="计费状态" value={selected.billable ? "计费" : "不计费"} />
+                )}
+                {selected.billable === false && selected.reportedCredits !== undefined && (
+                  <DetailItem
+                    label="服务端报告 Credits"
+                    value={`${formatCredits(selected.reportedCredits)}（未扣费）`}
+                  />
                 )}
                 {selected.contextUsageRatio !== undefined && (
                   <DetailItem

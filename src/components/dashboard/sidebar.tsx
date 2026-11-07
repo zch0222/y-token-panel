@@ -12,6 +12,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { cn } from "@/lib/utils";
 import {
   formatCompact,
@@ -110,9 +111,13 @@ export function Sidebar({
               <span>今日消耗</span>
               <span className="text-[10px] text-muted-foreground/70">Credits</span>
             </div>
-            <div className="mt-2 text-xl font-semibold tabular-nums">
-              {formatCredits(today.credits, today.hasCredit)}
-            </div>
+            {today.mixedCreditUnits ? (
+              <CreditBreakdown items={today.creditsByHarness} className="mt-2 text-sm font-semibold" />
+            ) : (
+              <div className="mt-2 text-xl font-semibold tabular-nums">
+                {formatCredits(today.credits, today.hasCredit)}
+              </div>
+            )}
             <div className="mt-1.5 text-[11px] text-muted-foreground">
               {today.hasTokens ? `${formatCompact(today.tokens)} Tokens · ` : ""}
               {today.requests} 次请求

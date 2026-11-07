@@ -9,6 +9,7 @@ export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all";
 export type MetricKey = "credits" | "requests" | "tokens" | "cacheRate";
 export type GroupDimension = "model" | "provider" | "project" | "harness";
 export type InputTokenSemantics = "fresh" | "total";
+export type BillingFilter = "all" | "billable" | "unbilled";
 
 export interface UsageRecord {
   id: string;
@@ -26,11 +27,21 @@ export interface UsageRecord {
   totalTokens: number;
   inputTokenSemantics: InputTokenSemantics;
   hasTokenUsage: boolean;
+  /** 实际计费的 Credits；服务端标记为不计费的请求记为 0。 */
   credits: number;
+  /** 计量信息完整（能确定计费金额，包括确定不计费）。 */
   hasCredit: boolean;
+  /** 服务端报告的原始 Credits；不计费请求也会报告非零值。 */
+  reportedCredits?: number;
   billable?: boolean;
   contextUsageRatio?: number;
   status: "success" | "error";
+}
+
+export interface CreditBreakdownItem {
+  harness: HarnessId;
+  label: string;
+  credits: number;
 }
 
 export interface HarnessUsage {
@@ -56,8 +67,14 @@ export interface UsageResponse {
 
 export interface UsageSummary {
   requests: number;
+  /** 计费 Credits 合计；mixedCreditUnits 为 true 时跨 Harness 相加，没有意义，不应展示。 */
   credits: number;
   hasCredit: boolean;
+  /** 按 Harness 分列的计费 Credits，不同 Harness 的 Credits 单位不同。 */
+  creditsByHarness: CreditBreakdownItem[];
+  mixedCreditUnits: boolean;
+  /** 服务端报告了 Credits 但标记为不计费的部分。 */
+  unbilledCredits: number;
   tokens: number;
   hasTokens: boolean;
   inputTokens: number;
@@ -80,6 +97,8 @@ export interface TrendPoint {
   tokens: number;
   requests: number;
   credits: number;
+  /** 服务端报告但标记为不计费的 Credits，用于在趋势图上叠加显示。 */
+  unbilledCredits: number;
   cacheRate: number;
   inputTokens: number;
   cacheReadTokens: number;
@@ -93,6 +112,19 @@ export const RANGE_OPTIONS: Array<{ value: RangeKey; label: string }> = [
   { value: "30d", label: "近 30 天" },
   { value: "all", label: "全部时间" },
 ];
+
+export const BILLING_OPTIONS: Array<{ value: BillingFilter; label: string }> = [
+  { value: "all", label: "全部计费状态" },
+  { value: "billable", label: "计费" },
+  { value: "unbilled", label: "未计费" },
+];
+
+/** 没有计费标记的记录（如 CodeBuddy）按计费处理。 */
+function matchesBilling(record: UsageRecord, billing: BillingFilter): boolean {
+  if (billing === "billable") return record.billable !== false;
+  if (billing === "unbilled") return record.billable === false;
+  return true;
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const pad = (value: number) => String(value).padStart(2, "0");
@@ -120,6 +152,7 @@ export function filterUsageRecords(
   model = "all",
   now = new Date(),
   harness: HarnessFilter = "all",
+  billing: BillingFilter = "all",
 ): UsageRecord[] {
   const { start, end } = getRangeBounds(range, now);
   return records
@@ -130,7 +163,8 @@ export function filterUsageRecords(
         (harness === "all" || record.harness === harness) &&
         (project === "all" || record.project === project) &&
         (provider === "all" || record.provider === provider) &&
-        (model === "all" || record.model === model),
+        (model === "all" || record.model === model) &&
+        matchesBilling(record, billing),
     )
     .sort((a, b) => b.timestamp - a.timestamp);
 }
@@ -151,10 +185,25 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     0,
   );
   const successful = records.filter((record) => record.status === "success").length;
+  const creditTotals = new Map<HarnessId, number>();
+  let unbilledCredits = 0;
+  for (const record of records) {
+    if (record.hasCredit) {
+      creditTotals.set(record.harness, (creditTotals.get(record.harness) ?? 0) + record.credits);
+    }
+    if (record.billable === false) unbilledCredits += record.reportedCredits ?? 0;
+  }
+  const creditsByHarness = HARNESS_OPTIONS.flatMap((option) => {
+    const credits = creditTotals.get(option.id);
+    return credits === undefined ? [] : [{ harness: option.id, label: option.label, credits }];
+  });
   return {
     requests: records.length,
     credits: records.reduce((sum, record) => sum + record.credits, 0),
-    hasCredit: records.some((record) => record.hasCredit),
+    hasCredit: creditsByHarness.length > 0,
+    creditsByHarness,
+    mixedCreditUnits: creditsByHarness.length > 1,
+    unbilledCredits,
     tokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
     hasTokens: records.some((record) => record.hasTokenUsage),
     inputTokens,
@@ -197,6 +246,7 @@ function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
     tokens: 0,
     requests: 0,
     credits: 0,
+    unbilledCredits: 0,
     cacheRate: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
@@ -257,6 +307,7 @@ export function buildTrend(
     point.tokens += record.totalTokens;
     point.requests += 1;
     point.credits += record.credits;
+    if (record.billable === false) point.unbilledCredits += record.reportedCredits ?? 0;
     point.inputTokens += record.inputTokens;
     point.cacheReadTokens += record.cacheReadTokens;
     point.cacheableInputTokens += getCacheableInputTokens(record);

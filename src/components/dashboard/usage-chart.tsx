@@ -57,14 +57,22 @@ function ChartTooltip({
 }) {
   if (!active || !payload?.[0]) return null;
   const point = payload[0].payload;
+  const showUnbilled = metric === "credits" && point.unbilledCredits > 0;
   return (
     <div className="min-w-[168px] rounded-lg border border-border bg-popover px-3.5 py-3 shadow-xl">
       <div className="mb-2 text-xs text-muted-foreground">{point.fullLabel}</div>
       <div className="flex items-center gap-2 text-sm font-medium">
         <span className="size-2 rounded-[2px] bg-primary" />
-        <span>{metricLabels[metric]}</span>
+        <span>{metric === "credits" ? "计费 Credits" : metricLabels[metric]}</span>
         <span className="ml-auto pl-4 tabular-nums">{formatMetric(point[metric], metric)}</span>
       </div>
+      {showUnbilled && (
+        <div className="mt-1.5 flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="size-2 rounded-[2px] bg-primary/30" />
+          <span>未计费</span>
+          <span className="ml-auto pl-4 tabular-nums">{formatMetric(point.unbilledCredits, metric)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -76,6 +84,8 @@ export function UsageChart({
   chartType,
   onChartTypeChange,
 }: UsageChartProps) {
+  // 不计费请求的报告值叠加在计费柱上方，让免费用量在趋势里可见。
+  const showUnbilled = metric === "credits" && data.some((point) => point.unbilledCredits > 0);
   const axisFormatter = (value: number) => {
     if (metric === "cacheRate") return `${Math.round(value * 100)}%`;
     if (metric === "requests") return Math.round(value).toString();
@@ -115,6 +125,18 @@ export function UsageChart({
           <span className="font-medium text-foreground/80">{metricLabels[metric]}</span>
           <span>·</span>
           <span>{hourly ? "按小时" : "按日期"}</span>
+          {showUnbilled && (
+            <span className="ml-2 flex items-center gap-3">
+              <span className="flex items-center gap-1.5">
+                <span className="size-2 rounded-[2px] bg-primary" />
+                计费
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="size-2 rounded-[2px] bg-primary/30" />
+                未计费
+              </span>
+            </span>
+          )}
         </div>
         <div className="flex items-center rounded-md border border-border/80 p-0.5">
           <Button
@@ -148,11 +170,23 @@ export function UsageChart({
               {sharedAxes}
               <Bar
                 dataKey={metric}
+                stackId="value"
                 fill="var(--primary)"
-                radius={[5, 5, 2, 2]}
+                radius={showUnbilled ? [0, 0, 2, 2] : [5, 5, 2, 2]}
                 maxBarSize={40}
                 animationDuration={450}
               />
+              {showUnbilled && (
+                <Bar
+                  dataKey="unbilledCredits"
+                  stackId="value"
+                  fill="var(--primary)"
+                  fillOpacity={0.3}
+                  radius={[5, 5, 0, 0]}
+                  maxBarSize={40}
+                  animationDuration={450}
+                />
+              )}
             </BarChart>
           ) : (
             <AreaChart data={data} margin={{ top: 18, right: 4, left: 0, bottom: 0 }}>
@@ -166,12 +200,28 @@ export function UsageChart({
               <Area
                 type="monotone"
                 dataKey={metric}
+                stackId="value"
                 stroke="var(--primary)"
                 strokeWidth={2.2}
                 fill="url(#usage-area)"
                 activeDot={{ r: 4, strokeWidth: 2, fill: "var(--card)" }}
                 animationDuration={450}
               />
+              {showUnbilled && (
+                <Area
+                  type="monotone"
+                  dataKey="unbilledCredits"
+                  stackId="value"
+                  stroke="var(--primary)"
+                  strokeOpacity={0.45}
+                  strokeDasharray="4 3"
+                  strokeWidth={1.6}
+                  fill="var(--primary)"
+                  fillOpacity={0.1}
+                  activeDot={false}
+                  animationDuration={450}
+                />
+              )}
             </AreaChart>
           )}
         </ResponsiveContainer>

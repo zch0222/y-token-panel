@@ -29,12 +29,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
 import {
+  BILLING_OPTIONS,
   buildTrend,
   filterUsageRecords,
   formatCompact,
@@ -44,10 +46,13 @@ import {
   HARNESS_OPTIONS,
   RANGE_OPTIONS,
   summarizeRecords,
+  type BillingFilter,
+  type CreditBreakdownItem,
   type HarnessFilter,
   type MetricKey,
   type RangeKey,
   type UsageResponse,
+  type UsageSummary,
 } from "@/lib/usage";
 
 interface MetricCardProps {
@@ -58,6 +63,9 @@ interface MetricCardProps {
   selected: boolean;
   onClick: () => void;
   className?: string;
+  /** 设置后按 Harness 分列展示，替代单一数值。 */
+  breakdown?: CreditBreakdownItem[];
+  detail?: string;
 }
 
 function MetricCard({
@@ -68,6 +76,8 @@ function MetricCard({
   selected,
   onClick,
   className,
+  breakdown,
+  detail,
 }: MetricCardProps) {
   return (
     <button
@@ -85,12 +95,17 @@ function MetricCard({
         {label}
         <CircleHelp className="size-3 opacity-60" />
       </div>
-      <div className="mt-2.5 flex min-w-0 items-baseline gap-2">
-        <span className="truncate text-[27px] font-semibold leading-none tracking-[-0.025em] tabular-nums">
-          {value}
-        </span>
-        {suffix && <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{suffix}</span>}
-      </div>
+      {breakdown ? (
+        <CreditBreakdown items={breakdown} className="mt-2.5 text-[15px] font-semibold" />
+      ) : (
+        <div className="mt-2.5 flex min-w-0 items-baseline gap-2">
+          <span className="truncate text-[27px] font-semibold leading-none tracking-[-0.025em] tabular-nums">
+            {value}
+          </span>
+          {suffix && <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{suffix}</span>}
+        </div>
+      )}
+      {detail && <div className="mt-2 truncate text-[11px] text-muted-foreground">{detail}</div>}
       <span
         className={cn(
           "absolute inset-x-5 bottom-0 h-0.5 origin-left rounded-full bg-primary transition-transform sm:inset-x-6",
@@ -99,6 +114,35 @@ function MetricCard({
       />
     </button>
   );
+}
+
+const BACKGROUND_REQUEST_NOTE =
+  "Qoder 的 auto-mode 分类器、会话标题、compact 等后台请求不写入本地会话，未计入";
+
+function getChartNotice(
+  metric: MetricKey,
+  summary: UsageSummary,
+  harness: HarnessFilter,
+): { title: string; description: string } | null {
+  if (metric === "credits" && summary.mixedCreditUnits) {
+    return {
+      title: "不同 Harness 的 Credits 无法合并",
+      description: `${summary.creditsByHarness.map((item) => item.label).join("、")} 的 Credits 不是同一计量单位，请切换到单个 Harness 查看 Credits 趋势。`,
+    };
+  }
+  if (
+    (metric === "tokens" && !summary.hasTokens) ||
+    (metric === "cacheRate" && summary.cacheableInputTokens === 0)
+  ) {
+    return {
+      title: "当前范围没有可用的 Token 数据",
+      description:
+        harness === "qoder"
+          ? "Qoder 当前本地日志只报告 Credits 和请求信息，Token 字段未提供有效数值。"
+          : "切换到 Credits 或请求数查看趋势，或选择包含 Token 记录的其他 Harness。",
+    };
+  }
+  return null;
 }
 
 const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
@@ -119,6 +163,7 @@ export function UsageDashboard() {
   const [project, setProject] = useState("all");
   const [provider, setProvider] = useState("all");
   const [model, setModel] = useState("all");
+  const [billing, setBilling] = useState<BillingFilter>("all");
   const [metric, setMetric] = useState<MetricKey>("tokens");
   const [chartType, setChartType] = useState<ChartType>("bar");
   const [tab, setTab] = useState<DetailTab>("models");
@@ -172,8 +217,9 @@ export function UsageDashboard() {
     [records, harness],
   );
   const filteredRecords = useMemo(
-    () => filterUsageRecords(records, range, project, provider, model, referenceTime, harness),
-    [records, range, project, provider, model, referenceTime, harness],
+    () =>
+      filterUsageRecords(records, range, project, provider, model, referenceTime, harness, billing),
+    [records, range, project, provider, model, referenceTime, harness, billing],
   );
   const summary = useMemo(() => summarizeRecords(filteredRecords), [filteredRecords]);
   const today = useMemo(
@@ -187,6 +233,7 @@ export function UsageDashboard() {
     () => buildTrend(filteredRecords, range, referenceTime),
     [filteredRecords, range, referenceTime],
   );
+  const chartNotice = getChartNotice(metric, summary, harness);
   const activeSources = useMemo(
     () =>
       data?.sources.filter((source) => harness === "all" || source.harness === harness) ?? [],
@@ -225,13 +272,15 @@ export function UsageDashboard() {
     harness !== "all" ||
     project !== "all" ||
     provider !== "all" ||
-    model !== "all";
+    model !== "all" ||
+    billing !== "all";
   const clearFilters = () => {
     setRange("today");
     setHarness("all");
     setProject("all");
     setProvider("all");
     setModel("all");
+    setBilling("all");
     setMetric("tokens");
   };
   const changeView = (next: DashboardView) => {
@@ -376,6 +425,22 @@ export function UsageDashboard() {
               </SelectContent>
             </Select>
 
+            <Select
+              value={billing}
+              onValueChange={(value) => setBilling((value as BillingFilter | null) ?? "all")}
+            >
+              <SelectTrigger className="h-9 min-w-[132px] border-border bg-card text-xs" aria-label="计费状态筛选">
+                <SelectValue>{BILLING_OPTIONS.find((option) => option.value === billing)?.label}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {BILLING_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
             {hasFilters && (
               <Button
                 type="button"
@@ -421,10 +486,18 @@ export function UsageDashboard() {
                 ) : (
                   <>
                     <MetricCard
-                      label="总 Credits"
+                      label="计费 Credits"
                       value={formatCredits(summary.credits, summary.hasCredit)}
                       suffix={summary.hasCredit ? "credits" : undefined}
-                      hint="各 Harness 本地日志报告的原始 Credits，不代表美元金额"
+                      breakdown={summary.mixedCreditUnits ? summary.creditsByHarness : undefined}
+                      detail={
+                        !summary.mixedCreditUnits && summary.unbilledCredits > 0
+                          ? `另有 ${formatCredits(summary.unbilledCredits)} 未计费`
+                          : undefined
+                      }
+                      hint={`只计入服务端标记为计费的请求，不计费请求的报告值单列，不代表美元金额${
+                        summary.mixedCreditUnits ? "；不同 Harness 的 Credits 单位不同，分别列出" : ""
+                      }；${BACKGROUND_REQUEST_NOTE}`}
                       selected={metric === "credits"}
                       onClick={() => setMetric("credits")}
                       className="border-b border-r md:border-b-0"
@@ -432,7 +505,7 @@ export function UsageDashboard() {
                     <MetricCard
                       label="总请求数"
                       value={summary.requests.toLocaleString("zh-CN")}
-                      hint="按上游请求 ID 去重后的本地模型调用次数"
+                      hint={`按上游请求 ID 去重后的本地模型调用次数；${BACKGROUND_REQUEST_NOTE}`}
                       selected={metric === "requests"}
                       onClick={() => setMetric("requests")}
                       className="border-b md:border-b-0 md:border-r"
@@ -464,15 +537,12 @@ export function UsageDashboard() {
                 )}
               </div>
               {!loading &&
-                ((metric === "tokens" && !summary.hasTokens) ||
-                (metric === "cacheRate" && summary.cacheableInputTokens === 0) ? (
+                (chartNotice ? (
                   <div className="flex h-[292px] flex-col items-center justify-center border-t border-border/70 px-6 text-center">
                     <CircleHelp className="mb-3 size-7 text-muted-foreground/50" strokeWidth={1.5} />
-                    <div className="text-sm font-medium">当前范围没有可用的 Token 数据</div>
+                    <div className="text-sm font-medium">{chartNotice.title}</div>
                     <p className="mt-1.5 max-w-md text-xs leading-5 text-muted-foreground">
-                      {harness === "qoder"
-                        ? "Qoder 当前本地日志只报告 Credits 和请求信息，Token 字段未提供有效数值。"
-                        : "切换到 Credits 或请求数查看趋势，或选择包含 Token 记录的其他 Harness。"}
+                      {chartNotice.description}
                     </p>
                   </div>
                 ) : (
@@ -566,7 +636,7 @@ export function UsageDashboard() {
             </div>
             <div className="rounded-lg border border-border/70 p-3.5 text-xs leading-5 text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">统计说明</div>
-              Credits 采用各 Harness 原始字段，不按美元展示；请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。
+              Credits 采用各 Harness 原始字段，不按美元展示。Qoder 与其自身的会话积分统计一致，只计入服务端标记为计费（billable）的请求，不计费请求的报告值单独显示。不同 Harness 的 Credits 单位不同，全部视图中分别列出。{BACKGROUND_REQUEST_NOTE}，实际扣费以 Qoder 的 /usage 为准。请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。
             </div>
           </div>
         </DialogContent>

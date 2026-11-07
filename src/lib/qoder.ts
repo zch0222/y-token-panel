@@ -16,6 +16,7 @@ interface QoderMessageUsage {
   cache_read_input_tokens?: number | string;
   cache_creation_input_tokens?: number | string;
   credits?: number | string;
+  /** 折扣或促销前的价格，不是实际消耗，不参与统计。 */
   original_credits?: number | string;
   billable?: boolean;
   context_usage_ratio?: number | string;
@@ -43,6 +44,11 @@ function finiteNumber(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  const parsed = finiteNumber(value);
+  return parsed !== undefined && parsed >= 0 ? parsed : undefined;
 }
 
 function firstNumber(...values: unknown[]): number | undefined {
@@ -89,7 +95,13 @@ function parseSessionLine(
   const totalTokens =
     firstNumber(usage.total_tokens) ??
     inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
-  const credits = firstNumber(usage.credits, usage.original_credits);
+  // 与 Qoder 自身的会话积分统计一致：只累计 billable=true 的 credits。
+  // billable=false 的请求服务端仍报告非零 credits，但不扣费；缺少 billable 视为计量不完整。
+  const reportedCredits = nonNegativeNumber(usage.credits);
+  const billable = typeof usage.billable === "boolean" ? usage.billable : undefined;
+  const hasCredit =
+    billable === false || (billable === true && reportedCredits !== undefined);
+  const credits = billable === true ? reportedCredits ?? 0 : 0;
   const sessionId = record.sessionId ?? path.basename(file, ".jsonl");
   const fallbackId = record.message?.id ?? record.uuid ?? `${file}:${lineIndex}`;
   const requestId = usage.request_id ?? fallbackId;
@@ -111,9 +123,10 @@ function parseSessionLine(
     totalTokens,
     inputTokenSemantics: "fresh",
     hasTokenUsage: totalTokens > 0,
-    credits: credits ?? 0,
-    hasCredit: credits !== undefined,
-    billable: usage.billable,
+    credits,
+    hasCredit,
+    reportedCredits,
+    billable,
     contextUsageRatio: finiteNumber(usage.context_usage_ratio),
     status:
       record.isApiErrorMessage ||
