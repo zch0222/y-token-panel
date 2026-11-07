@@ -2,6 +2,7 @@ import { connection, NextResponse } from "next/server";
 import { readClaudeUsage } from "@/lib/claude";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
+import { readDshUsage } from "@/lib/dsh";
 import { readKcodeUsage } from "@/lib/kcode";
 import { readQoderUsage } from "@/lib/qoder";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
@@ -19,6 +20,7 @@ export async function GET() {
       readKcodeUsage(),
       readClaudeUsage(),
       readCodexUsage(),
+      readDshUsage(),
     ]);
     const usage: UsageResponse = {
       records: results.flatMap((result) => result.records),

@@ -149,6 +149,10 @@ const HARNESS_SOURCE_HINTS: Record<
     source: "~/.codex/sessions",
     envHint: "CODEX_HOME 环境变量指定其他 .codex 根目录（其下需有 sessions）",
   },
+  dsh: {
+    source: "~/.dsh/sessions",
+    envHint: "DSH_HOME 环境变量指定其他 .dsh 根目录（其下需有 sessions）",
+  },
 };
 
 function getChartNotice(
@@ -675,7 +679,7 @@ export function UsageDashboard() {
             </div>
             <div className="rounded-lg border border-border/70 p-3.5 text-xs leading-5 text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">统计说明</div>
-              Credits 采用各 Harness 原始字段，不按美元展示。Qoder 与其自身的会话积分统计一致，只计入服务端标记为计费（billable）的请求，不计费请求的报告值单独显示。不同 Harness 的 Credits 单位不同，全部视图中分别列出。{BACKGROUND_REQUEST_NOTE}，实际扣费以 Qoder 的 /usage 为准。请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。ZCode 数据来自其本地 SQLite 用量库（model_usage 表，仅保留最近 30 天），输入含缓存读写，无 Credits 字段；每行对应一次上游请求尝试（含重试），耗时为精确计时。Claude Code 数据来自其本地会话转录（~/.claude/projects，含子 agent 转录），按响应 message ID 去重，输入不含缓存读写，无 Credits 字段；耗时会话日志未记录，按时间戳沿父链估算（含首字等待）。Codex / ChatGPT 数据来自其本地 rollout 会话（~/.codex/sessions 与 archived_sessions，含 .jsonl.zst 压缩形态），优先取每次请求的精确 last_token_usage，输入不含缓存读写（缓存读/写单列），无 Credits 字段；限额刷新重发的重复快照去重，子 agent / 翻页续写按 cc-switch 口径剔除父历史重放，耗时会话日志未记录，按各行时间戳估算（含首字等待）。
+              Credits 采用各 Harness 原始字段，不按美元展示。Qoder 与其自身的会话积分统计一致，只计入服务端标记为计费（billable）的请求，不计费请求的报告值单独显示。不同 Harness 的 Credits 单位不同，全部视图中分别列出。{BACKGROUND_REQUEST_NOTE}，实际扣费以 Qoder 的 /usage 为准。请求按上游 ID 去重。CodeBuddy 输入包含缓存读取，Qoder 输入按不含缓存读写处理。Qoder 当前全零 Token 字段视为未上报，不参与 Token 与缓存统计。ZCode 数据来自其本地 SQLite 用量库（model_usage 表，仅保留最近 30 天），输入含缓存读写，无 Credits 字段；每行对应一次上游请求尝试（含重试），耗时为精确计时。Claude Code 数据来自其本地会话转录（~/.claude/projects，含子 agent 转录），按响应 message ID 去重，输入不含缓存读写，无 Credits 字段；耗时会话日志未记录，按时间戳沿父链估算（含首字等待）。Codex / ChatGPT 数据来自其本地 rollout 会话（~/.codex/sessions 与 archived_sessions，含 .jsonl.zst 压缩形态），优先取每次请求的精确 last_token_usage，输入不含缓存读写（缓存读/写单列），无 Credits 字段；限额刷新重发的重复快照去重，子 agent / 翻页续写按 cc-switch 口径剔除父历史重放，耗时会话日志未记录，按各行时间戳估算（含首字等待）。DeepSeek Harness 数据来自其本地会话日志（~/.dsh/sessions，逐帧压缩的 .jsonl.zstd，含 v3/v4 与子 agent 会话），按响应 message ID 去重（分叉会话复制的前缀不重复计，同目录多版本文件不双算），输入不含缓存读写（缓存读/写单列），无 Credits 字段；耗时按 step/start 到响应事件的时间差估算（含首字等待与重试）。
             </div>
           </div>
         </DialogContent>

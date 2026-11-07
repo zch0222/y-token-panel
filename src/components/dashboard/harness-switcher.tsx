@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Briefcase, Layers, Moon, Sparkles, SquareTerminal, Telescope, Zap, type LucideIcon } from "lucide-react";
+import { Bot, Briefcase, Layers, Moon, Sparkles, SquareTerminal, Telescope, Waves, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   HARNESS_OPTIONS,
@@ -25,6 +25,7 @@ const icons: Record<"all" | HarnessId, LucideIcon> = {
   kcode: Moon,
   claude: Sparkles,
   codex: Telescope,
+  dsh: Waves,
 };
 
 const iconStyles: Record<"all" | HarnessId, string> = {
@@ -36,6 +37,7 @@ const iconStyles: Record<"all" | HarnessId, string> = {
   kcode: "bg-rose-500/12 text-rose-400",
   claude: "bg-orange-500/12 text-orange-400",
   codex: "bg-teal-500/12 text-teal-400",
+  dsh: "bg-blue-500/12 text-blue-400",
 };
 
 export function HarnessSwitcher({
