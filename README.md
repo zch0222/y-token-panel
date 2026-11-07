@@ -45,6 +45,14 @@ ZCode 数据源是其本地用量库（SQLite，只读打开）：
 
 可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。读取该库需要 Node.js 22.5+（`node:sqlite`）；版本过低时仅跳过 ZCode 统计，其余 Harness 不受影响。注意 ZCode 自身只保留最近 30 天的用量行。
 
+KCode（Kimi Code）数据源是其本地会话 wire 日志：
+
+~~~text
+~/.kimi-code/sessions/<workspace>/<session>/agents/<agent>/wire.jsonl
+~~~
+
+可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
+
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 
 ## 统计口径

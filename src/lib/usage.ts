@@ -4,6 +4,7 @@ export const HARNESS_OPTIONS = [
   { id: "codebuddy", label: "CodeBuddy", description: "CodeBuddy CLI 本地会话" },
   { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
   { id: "zcode", label: "ZCode", description: "ZCode Desktop / CLI 本地会话" },
+  { id: "kcode", label: "KCode", description: "Kimi Code Desktop / CLI 本地会话" },
 ] as const;
 
 export type HarnessId = (typeof HARNESS_OPTIONS)[number]["id"];
@@ -337,7 +338,8 @@ export function buildTrend(
   }));
 }
 
-export function deriveProvider(model: string): string {
+/** 从模型名推断供应商；兜底值由调用方给定（如 CodeBuddy / KCode）。 */
+export function deriveProvider(model: string, fallback = "CodeBuddy"): string {
   const normalized = model.toLowerCase();
   if (normalized.includes("deepseek")) return "DeepSeek";
   if (normalized.includes("kimi") || /^k\d/.test(normalized)) return "Moonshot AI";
@@ -347,7 +349,7 @@ export function deriveProvider(model: string): string {
   if (normalized.includes("qwen")) return "Alibaba Cloud";
   if (normalized.includes("doubao")) return "Volcengine";
   if (normalized.includes("minimax")) return "MiniMax";
-  return "CodeBuddy";
+  return fallback;
 }
 
 export function formatCompact(value: number): string {

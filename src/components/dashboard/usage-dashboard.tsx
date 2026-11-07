@@ -136,6 +136,10 @@ const HARNESS_SOURCE_HINTS: Record<
     source: "~/.zcode/cli/db/db.sqlite",
     envHint: "ZCODE_DATA_DIR 环境变量指定其他 .zcode 根目录（其下需有 cli/db/db.sqlite）",
   },
+  kcode: {
+    source: "~/.kimi-code/sessions",
+    envHint: "KIMI_CODE_HOME 环境变量指定其他 .kimi-code 根目录（其下需有 sessions）",
+  },
 };
 
 function getChartNotice(
