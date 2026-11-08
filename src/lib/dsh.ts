@@ -104,7 +104,7 @@ export async function readDshUsage(): Promise<HarnessUsage> {
     }
   }
 
-  records.sort((a, b) => b.timestamp - a.timestamp);
+  records.sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id));
   return {
     harness: "dsh",
     records,

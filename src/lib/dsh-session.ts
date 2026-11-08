@@ -94,20 +94,23 @@ function stepKey(turn: unknown, step: unknown): string {
 export function scanZstdFrames(buffer: Buffer): {
   frames: Array<{ start: number; end: number }>;
   tornAt: number | null;
+  /** 已具备足够字节且确定非法的帧起点；字节不足导致的普通残缺尾帧为 null。 */
+  invalidAt: number | null;
 } {
   const frames: Array<{ start: number; end: number }> = [];
   let offset = 0;
   while (offset < buffer.length) {
     const start = offset;
-    const torn = () => ({ frames, tornAt: start });
+    const torn = () => ({ frames, tornAt: start, invalidAt: null });
+    const invalid = () => ({ frames, tornAt: start, invalidAt: start });
     if (buffer.length - offset < 4) return torn();
-    if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) return torn();
+    if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) return invalid();
     offset += 4;
     if (offset === buffer.length) return torn();
 
     const descriptor = buffer[offset];
     offset += 1;
-    if (descriptor & 0x18) return torn(); // 保留位非零：不是合法帧头
+    if (descriptor & 0x18) return invalid(); // 保留位非零：不是合法帧头
     const contentSizeFlag = descriptor >> 6;
     const singleSegment = (descriptor & 0x20) !== 0;
     const checksum = (descriptor & 0x04) !== 0;
@@ -129,7 +132,7 @@ export function scanZstdFrames(buffer: Buffer): {
       const lastBlock = (header & 1) !== 0;
       const blockType = (header >> 1) & 0x03;
       const blockSize = header >> 3;
-      if (blockType === 0x03) return torn(); // 保留块类型：结构损坏
+      if (blockType === 0x03) return invalid(); // 保留块类型：结构损坏
       const payloadBytes = blockType === 0x01 ? 1 : blockSize; // RLE 块载荷固定 1 字节
       if (buffer.length - offset < payloadBytes) return torn();
       offset += payloadBytes;
@@ -141,7 +144,7 @@ export function scanZstdFrames(buffer: Buffer): {
     }
     frames.push({ start, end: offset });
   }
-  return { frames, tornAt: null };
+  return { frames, tornAt: null, invalidAt: null };
 }
 
 /**
@@ -188,14 +191,56 @@ export function dshProjectLabel(directory: string): string {
  * 耗时估算依赖同文件内先行的 `step/start`（跨文件不成立，分叉前缀里也不会
  * 重复出现），找不到起点时 estimatedDurationMs 为 undefined。
  */
-export function parseDshSessionLog(
-  text: string,
+export interface DshParserState {
+  version: 1;
+  /** 已消费完整事件后仍未匹配 assistant/message 的 step 起点。 */
+  stepStarts: Array<[string, number]>;
+  /** 未终结 JSONL 行的原始字节（base64）；UTF-8 字符也可能跨 zstd 帧。 */
+  pendingBytes: string;
+}
+
+export function emptyDshParserState(): DshParserState {
+  return { version: 1, stepStarts: [], pendingBytes: "" };
+}
+
+export function decodeDshParserState(json: string | null): DshParserState | null {
+  if (json === null) return emptyDshParserState();
+  try {
+    const value = JSON.parse(json) as Partial<DshParserState>;
+    if (
+      value.version !== 1 ||
+      !Array.isArray(value.stepStarts) ||
+      typeof value.pendingBytes !== "string" ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.pendingBytes) ||
+      value.stepStarts.some(
+        (entry) =>
+          !Array.isArray(entry) ||
+          entry.length !== 2 ||
+          typeof entry[0] !== "string" ||
+          typeof entry[1] !== "number" ||
+          !Number.isFinite(entry[1]),
+      )
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      stepStarts: value.stepStarts.map(([key, time]) => [key, time]),
+      pendingBytes: value.pendingBytes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseDshLines(
+  lines: string[],
   project: string,
   sessionId: string,
+  stepStarts: Map<string, number>,
 ): UsageRecord[] {
   const records: UsageRecord[] = [];
-  const stepStarts = new Map<string, number>();
-  for (const line of text.split("\n")) {
+  for (const line of lines) {
     if (!line.trim()) continue;
     let event: DshEvent;
     try {
@@ -281,4 +326,37 @@ export function parseDshSessionLog(
     });
   }
   return records;
+}
+
+export function parseDshSessionLog(
+  text: string,
+  project: string,
+  sessionId: string,
+): UsageRecord[] {
+  return parseDshLines(text.split("\n"), project, sessionId, new Map());
+}
+
+/**
+ * 增量解析完整帧/行产生的新文本。只消费换行终结的事件；剩余文本与 step 起点
+ * 一并返回，由调用方和文件游标在同一 SQLite 事务中持久化。
+ */
+export function parseDshSessionLogIncremental(
+  bytes: Buffer,
+  project: string,
+  sessionId: string,
+  previous: DshParserState,
+): { records: UsageRecord[]; state: DshParserState } {
+  const combined = Buffer.concat([Buffer.from(previous.pendingBytes, "base64"), bytes]);
+  const lastNewline = combined.lastIndexOf(0x0a);
+  const complete = lastNewline === -1 ? Buffer.alloc(0) : combined.subarray(0, lastNewline + 1);
+  const stepStarts = new Map(previous.stepStarts);
+  const records = parseDshLines(complete.toString("utf8").split("\n"), project, sessionId, stepStarts);
+  return {
+    records,
+    state: {
+      version: 1,
+      stepStarts: Array.from(stepStarts),
+      pendingBytes: combined.subarray(lastNewline + 1).toString("base64"),
+    },
+  };
 }

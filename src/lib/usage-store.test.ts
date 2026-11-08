@@ -257,6 +257,57 @@ describe("UsageStore", () => {
     });
   });
 
+  it("记录、去重、快照与增量游标在同一事务中失败回滚", () => {
+    const store = openStore();
+    const initial = usage();
+    const oldCursor = {
+      harness: "dsh" as const,
+      filePath: "/tmp/dsh/session.jsonl",
+      fileSize: 10,
+      mtimeMs: 100,
+      cursorOffset: 5,
+      parserStateJson: null,
+      tailFingerprint: "old",
+      lastError: null,
+      updatedAt: 0,
+    };
+    store.markSyncStarted(100);
+    store.commitSnapshot(initial, 150, {
+      harness: "dsh",
+      resetCursors: true,
+      resetDedup: false,
+      cursors: [oldCursor],
+    });
+    const lastSuccess = store.getSnapshotJson();
+
+    store.markSyncStarted(200);
+    expect(() =>
+      store.commitSnapshot(
+        usage({
+          records: [record({ id: "claude:new" })],
+          syncedAt: initial.syncedAt + 1000,
+        }),
+        250,
+        {
+          harness: "dsh",
+          resetCursors: false,
+          resetDedup: false,
+          cursors: [
+            { ...oldCursor, fileSize: 20, cursorOffset: 15, tailFingerprint: "new" },
+            { ...oldCursor, filePath: "/tmp/dsh/invalid.jsonl", fileSize: 1, cursorOffset: 2 },
+          ],
+        },
+      ),
+    ).toThrow(/游标范围非法/);
+
+    expect(store.getSnapshotJson()).toBe(lastSuccess);
+    expect(store.readNormalizedRecords()).toEqual(initial.records);
+    expect(store.getDedupKeys("claude")).toEqual(["claude:message-1"]);
+    expect(store.getSessionLogStates("dsh")).toEqual([
+      expect.objectContaining({ filePath: oldCursor.filePath, cursorOffset: 5, tailFingerprint: "old" }),
+    ]);
+  });
+
   it("Next 重启后可读取同一快照，中断导入会恢复为错误且保留数据", () => {
     const databasePath = path.join(temporaryDirectory(), "usage.sqlite");
     const first = openStore(databasePath);

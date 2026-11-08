@@ -3,11 +3,13 @@ import { readClaudeUsage } from "@/lib/claude";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
 import { readDshUsage } from "@/lib/dsh";
+import { readDshUsageIncremental, type DshIncrementalResult } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
 import { readQoderUsage } from "@/lib/qoder";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
 import { readZcodeUsage } from "@/lib/zcode";
 import type { HarnessUsage, UsageResponse } from "@/lib/usage";
+import type { UsageStore } from "@/lib/usage-store";
 
 export type UsageReader = () => Promise<HarnessUsage>;
 
@@ -21,6 +23,21 @@ export interface UsageScannerStats {
   scans: number;
   pendingScans: number;
   maxPendingScans: number;
+}
+
+function combineUsageResults(results: HarnessUsage[]): UsageResponse {
+  const usage: UsageResponse = {
+    records: results.flatMap((result) => result.records),
+    sources: results.map(({ records, ...source }) => ({
+      ...source,
+      recordCount: records.length,
+    })),
+    scannedFiles: results.reduce((sum, result) => sum + result.scannedFiles, 0),
+    skippedFiles: results.reduce((sum, result) => sum + result.skippedFiles, 0),
+    syncedAt: Date.now(),
+  };
+  usage.records.sort((a, b) => b.timestamp - a.timestamp);
+  return usage;
 }
 
 /**
@@ -59,17 +76,7 @@ export function createUsageScanner(
 
       try {
         const results = await Promise.all(readers.map((read) => read()));
-        const usage: UsageResponse = {
-          records: results.flatMap((result) => result.records),
-          sources: results.map(({ records, ...source }) => ({
-            ...source,
-            recordCount: records.length,
-          })),
-          scannedFiles: results.reduce((sum, result) => sum + result.scannedFiles, 0),
-          skippedFiles: results.reduce((sum, result) => sum + result.skippedFiles, 0),
-          syncedAt: Date.now(),
-        };
-        usage.records.sort((a, b) => b.timestamp - a.timestamp);
+        const usage = combineUsageResults(results);
         recordCount = usage.records.length;
         return usage;
       } catch (error) {
@@ -100,7 +107,7 @@ export function createUsageScanner(
   };
 }
 
-const usageScanner = createUsageScanner([
+const usageReaders: UsageReader[] = [
   readCodeBuddyUsage,
   readWorkBuddyUsage,
   readQoderUsage,
@@ -109,8 +116,29 @@ const usageScanner = createUsageScanner([
   readClaudeUsage,
   readCodexUsage,
   readDshUsage,
-]);
+];
+
+const usageScanner = createUsageScanner(usageReaders);
 
 export function scanUsage(): Promise<UsageResponse> {
   return usageScanner.scan();
+}
+
+/** worker 专用：其他 reader 保持原实现，仅 DSH 使用持久游标增量路径。 */
+export async function scanUsageForStorage(store: UsageStore): Promise<{
+  usage: UsageResponse;
+  dsh: DshIncrementalResult;
+}> {
+  let incremental: DshIncrementalResult | undefined;
+  const readers = usageReaders.map((read) =>
+    read === readDshUsage
+      ? async () => {
+          incremental = await readDshUsageIncremental(store);
+          return incremental.usage;
+        }
+      : read,
+  );
+  const usage = combineUsageResults(await Promise.all(readers.map((read) => read())));
+  if (!incremental) throw new Error("DSH 增量 reader 未返回事务状态");
+  return { usage, dsh: incremental };
 }

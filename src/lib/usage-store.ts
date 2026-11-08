@@ -71,6 +71,28 @@ export interface UsageCommitResult {
   syncedAt: number;
 }
 
+export interface UsageSessionLogState {
+  harness: HarnessId;
+  filePath: string;
+  fileSize: number;
+  mtimeMs: number;
+  cursorOffset: number;
+  parserStateJson: string | null;
+  tailFingerprint: string | null;
+  lastError: string | null;
+  updatedAt: number;
+}
+
+/** 增量 reader 的游标必须与对应快照、记录和去重账本在同一事务提交。 */
+export interface UsageIncrementalCommit {
+  harness: HarnessId;
+  /** 文件删除、重写或非法边界后来源级重建，清理已经失效的文件游标。 */
+  resetCursors: boolean;
+  /** 来源级全量重建会重新执行当轮全局去重，可安全重置该来源的历史账本。 */
+  resetDedup: boolean;
+  cursors: UsageSessionLogState[];
+}
+
 function toStatus(row: StatusRow): UsageSyncStatus {
   return {
     phase: row.phase,
@@ -451,7 +473,46 @@ export class UsageStore {
     return this.getStatus();
   }
 
-  commitSnapshot(usage: UsageResponse, now = Date.now()): UsageCommitResult {
+  getSessionLogStates(harness: HarnessId): UsageSessionLogState[] {
+    const rows = this.db
+      .prepare("SELECT * FROM session_log_sync WHERE harness = ? ORDER BY file_path")
+      .all(harness) as unknown as Array<{
+      harness: HarnessId;
+      file_path: string;
+      file_size: number;
+      mtime_ms: number;
+      cursor_offset: number;
+      parser_state_json: string | null;
+      tail_fingerprint: string | null;
+      last_error: string | null;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      harness: row.harness,
+      filePath: row.file_path,
+      fileSize: row.file_size,
+      mtimeMs: row.mtime_ms,
+      cursorOffset: row.cursor_offset,
+      parserStateJson: row.parser_state_json,
+      tailFingerprint: row.tail_fingerprint,
+      lastError: row.last_error,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  getDedupKeys(harness: HarnessId): string[] {
+    return (
+      this.db
+        .prepare("SELECT dedup_key FROM usage_dedup WHERE harness = ?")
+        .all(harness) as unknown as Array<{ dedup_key: string }>
+    ).map((row) => row.dedup_key);
+  }
+
+  commitSnapshot(
+    usage: UsageResponse,
+    now = Date.now(),
+    incremental?: UsageIncrementalCommit,
+  ): UsageCommitResult {
     validateUsageForStorage(usage);
     const contentHash = createHash("sha256").update(snapshotContent(usage)).digest("hex");
 
@@ -484,10 +545,14 @@ export class UsageStore {
       };
       const responseJson = JSON.stringify(response);
 
-      if (changed) {
-        // 全量候选不经过 dedup 过滤；历史账本保留，供 M3+ 增量路径防重。
+      if (changed || incremental?.resetDedup) {
+        // 全量候选不经过 dedup 过滤；普通提交保留历史账本。来源级重建则明确
+        // 重置该来源账本，因为被截断/重写文件中的旧键可能已不再是有效历史。
         this.db.prepare("DELETE FROM usage_records").run();
         this.db.prepare("DELETE FROM usage_sources").run();
+        if (incremental?.resetDedup) {
+          this.db.prepare("DELETE FROM usage_dedup WHERE harness = ?").run(incremental.harness);
+        }
 
         const insertRecord = this.db.prepare(`
           INSERT INTO usage_records (
@@ -549,6 +614,51 @@ export class UsageStore {
         }
       }
 
+      if (incremental) {
+        if (incremental.resetCursors) {
+          this.db.prepare("DELETE FROM session_log_sync WHERE harness = ?").run(incremental.harness);
+        }
+        const upsertCursor = this.db.prepare(`
+          INSERT INTO session_log_sync (
+            harness, file_path, file_size, mtime_ms, cursor_offset,
+            parser_state_json, tail_fingerprint, last_error, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(harness, file_path) DO UPDATE SET
+            file_size = excluded.file_size,
+            mtime_ms = excluded.mtime_ms,
+            cursor_offset = excluded.cursor_offset,
+            parser_state_json = excluded.parser_state_json,
+            tail_fingerprint = excluded.tail_fingerprint,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        `);
+        for (const cursor of incremental.cursors) {
+          if (cursor.harness !== incremental.harness) {
+            throw new Error("增量游标 Harness 与提交批次不一致");
+          }
+          for (const [field, value] of Object.entries({
+            fileSize: cursor.fileSize,
+            cursorOffset: cursor.cursorOffset,
+          })) {
+            assertSafeInteger(value, `${cursor.filePath}.${field}`);
+          }
+          if (cursor.fileSize < 0 || cursor.cursorOffset < 0 || cursor.cursorOffset > cursor.fileSize) {
+            throw new Error(`增量游标范围非法: ${cursor.filePath}`);
+          }
+          upsertCursor.run(
+            cursor.harness,
+            cursor.filePath,
+            cursor.fileSize,
+            cursor.mtimeMs,
+            cursor.cursorOffset,
+            cursor.parserStateJson,
+            cursor.tailFingerprint,
+            cursor.lastError,
+            now,
+          );
+        }
+      }
+
       this.db
         .prepare(
           `INSERT INTO usage_snapshots (id, revision, content_hash, response_json, updated_at)
@@ -576,11 +686,13 @@ export class UsageStore {
     }
   }
 
-  /** 供一致性与迁移测试使用；GET 热路径直接读取预序列化快照。 */
-  readNormalizedRecords(): UsageRecord[] {
-    const rows = this.db
-      .prepare("SELECT * FROM usage_records ORDER BY timestamp_ms DESC, id ASC")
-      .all() as unknown as RecordRow[];
+  /** 供一致性与迁移测试及增量 reader 使用；GET 热路径直接读取预序列化快照。 */
+  readNormalizedRecords(harness?: HarnessId): UsageRecord[] {
+    const rows = (harness
+      ? this.db
+          .prepare("SELECT * FROM usage_records WHERE harness = ? ORDER BY timestamp_ms DESC, id ASC")
+          .all(harness)
+      : this.db.prepare("SELECT * FROM usage_records ORDER BY timestamp_ms DESC, id ASC").all()) as unknown as RecordRow[];
     return rows.map((row) => ({
       id: row.record_id,
       requestId: row.request_id,
