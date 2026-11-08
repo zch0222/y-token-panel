@@ -2,8 +2,8 @@
  * 余额查询限流与冷却决策（纯逻辑，便于用假时钟单测）。
  *
  * 防风控口径对齐 cc-switch：
- * - 同一供应商两次真实外呼有最小间隔（cc-switch 前端 staleTime 5min / 托盘 10s 节流
- *   的服务端强化版；手动刷新同样受限，连点只回缓存）；
+ * - cc-switch 手动点击即真查（只有并发合并），没有服务端最小间隔；这里只保留
+ *   5 秒防连点间隔（同时覆盖自动刷新最快档），间隔内的请求直接回缓存；
  * - 429 / 5xx / 网络错误视为瞬时失败（cc-switch isTransientUsageError），保留上次
  *   成功值并进入冷却，绝不连续重打；
  * - 401/403 等 4xx 是确定性失败，立即透出、不冷却（但最小间隔仍然生效）。
@@ -11,8 +11,8 @@
 
 import type { BalanceCacheEntry, BalanceResult } from "@/lib/balance";
 
-/** 同一供应商两次真实外呼的最小间隔（含手动刷新）——防风控核心。 */
-export const MIN_QUERY_INTERVAL_MS = 60_000;
+/** 同一供应商两次真实外呼的最小间隔（含手动刷新）——防连点抖动，取自动刷新最快档。 */
+export const MIN_QUERY_INTERVAL_MS = 5_000;
 
 /** 单次余额请求超时，对齐 cc-switch balance.rs 的 15s。 */
 export const QUERY_TIMEOUT_MS = 15_000;

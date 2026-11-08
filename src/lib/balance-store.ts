@@ -31,8 +31,8 @@ import {
  * ~/.y-token-panel 根目录，风格与其他 Harness 读取器一致）。API Key 只存本机文件，
  * 对外（HTTP 接口）仅暴露脱敏视图。
  *
- * 防风控（对齐并强化 cc-switch）：
- * - decideQuery 在服务端强制最小查询间隔与失败冷却，手动刷新连点也只回缓存；
+ * 防风控（对齐 cc-switch，手动刷新点击即真查）：
+ * - decideQuery 在服务端保留 5 秒防连点最小间隔与失败冷却，间隔内的连点只回缓存；
  * - nextEligibleAt 在外呼前落盘：外呼进行中进程重启也不会立刻重打；
  * - 同一供应商的并发查询共享同一个 in-flight Promise；
  * - 查询成功才更新 lastSuccess（keep-last-good），瞬时失败保留旧快照；

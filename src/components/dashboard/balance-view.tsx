@@ -55,8 +55,8 @@ import {
 import { MIN_QUERY_INTERVAL_MS } from "@/lib/balance-throttle";
 
 /**
- * 余额查询视图。查询走 /api/balance/query，服务端强制最小间隔与失败冷却
- *（对齐 cc-switch 的防风控口径：手动刷新连点只回缓存，429 冷却 5 分钟）。
+ * 余额查询视图。查询走 /api/balance/query，服务端只保留 5 秒防连点间隔与失败
+ * 冷却（对齐 cc-switch：手动点击即真查；429 冷却 5 分钟）。
  * 本组件只在挂载期间轮询，切走视图即停止外呼。
  */
 
@@ -66,8 +66,12 @@ const REFRESH_RESULT_MS = 1_000;
 // 「全部刷新」的并发上限，避免瞬间打满多个供应商。
 const BATCH_CONCURRENCY = 2;
 
+// 对齐 cc-switch 用量页的 5/10/30/60 秒档位，另保留 5 分钟（订阅查询口径）与 30 分钟。
 const AUTO_REFRESH_OPTIONS = [
   { value: "0", label: "关闭" },
+  { value: "5000", label: "每 5 秒" },
+  { value: "10000", label: "每 10 秒" },
+  { value: "30000", label: "每 30 秒" },
   { value: "60000", label: "每 1 分钟" },
   { value: "300000", label: "每 5 分钟" },
   { value: "1800000", label: "每 30 分钟" },
@@ -336,7 +340,7 @@ function ProviderCard({
             冷却中
           </span>
         ) : throttleRemainMs > 0 ? (
-          <span className="tabular-nums" title="服务端限流：两次真实查询至少间隔 1 分钟">
+          <span className="tabular-nums" title="服务端限流：两次真实查询至少间隔 5 秒（防连点）">
             {Math.ceil(throttleRemainMs / 1000)}s 后可刷新
           </span>
         ) : null}
@@ -1113,7 +1117,7 @@ export function BalanceView() {
         </Select>
         <div className="ml-auto hidden items-center gap-1.5 text-[11px] text-muted-foreground/75 sm:flex">
           <ShieldCheck className="size-3.5" />
-          内置限流：两次查询至少间隔 1 分钟，失败自动冷却
+          内置限流：两次查询至少间隔 5 秒，失败自动冷却
         </div>
       </div>
 
