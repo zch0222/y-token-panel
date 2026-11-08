@@ -70,12 +70,35 @@ export interface UsageSource extends Omit<HarnessUsage, "records"> {
   recordCount: number;
 }
 
+export type UsageSyncPhase = "empty" | "importing" | "ready" | "error";
+
+export interface UsageSyncStatus {
+  phase: UsageSyncPhase;
+  revision: number;
+  hasSnapshot: boolean;
+  startedAt: number | null;
+  syncedAt: number | null;
+  durationMs: number | null;
+  error: string | null;
+  recordCount: number;
+}
+
 export interface UsageResponse {
   records: UsageRecord[];
   sources: UsageSource[];
   scannedFiles: number;
   skippedFiles: number;
   syncedAt: number;
+  /** 以下字段由持久化查询层附加；reader 的原始扫描结果不包含它们。 */
+  revision?: number;
+  snapshotAvailable?: boolean;
+  sync?: UsageSyncStatus;
+}
+
+export interface UsageSnapshotResponse extends UsageResponse {
+  revision: number;
+  snapshotAvailable: boolean;
+  sync: UsageSyncStatus;
 }
 
 export interface UsageSummary {

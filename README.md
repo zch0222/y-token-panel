@@ -14,7 +14,7 @@
 
 ## 启动
 
-要求 Node.js 20.9 或更高版本。
+要求 Node.js 22.18 或更高版本（本地 SQLite 快照与独立 TypeScript worker 均使用该运行时能力）。
 
 ~~~bash
 npm install
@@ -52,7 +52,7 @@ ZCode 数据源是其本地用量库（SQLite，只读打开）：
 ~/.zcode/cli/db/db.sqlite（model_usage 表，join session 表取项目目录）
 ~~~
 
-可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。读取该库需要 Node.js 22.5+（`node:sqlite`）；版本过低时仅跳过 ZCode 统计，其余 Harness 不受影响。注意 ZCode 自身只保留最近 30 天的用量行。
+可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。读取该库使用 `node:sqlite`；应用整体最低 Node.js 版本见“启动”。注意 ZCode 自身只保留最近 30 天的用量行。
 
 KCode（Kimi Code）数据源是其本地会话 wire 日志：
 
@@ -78,6 +78,15 @@ Codex / ChatGPT（Codex CLI 与 Codex Desktop）数据源是其本地 rollout �
 ~~~
 
 可以通过 **CODEX_HOME**（与 Codex 自身的环境变量一致）指定另一个 `.codex` 根目录（其下需有 `sessions`）。字段语义按本机 Codex 的二进制与真实 rollout 反查确认，解析口径对齐 cc-switch 的会话导入：优先取每次请求的精确 `last_token_usage`，缺失时按 `total_token_usage` 累计差推；限额刷新重发的相同快照按来源去重；缓存读 / 写是 `input_tokens` 的不相交组成部分，输入 Tokens 按扣除缓存后的新鲜输入统计；子代理 fork 复制的父历史事件按签名序列剔除重放，翻页续写页恢复前序分段的累计基线（bounded 引用走字节区间校验）。读取压缩形态需要 Node.js 22.15+（`zlib.zstdDecompressSync`）；版本过低时压缩文件跳过，普通 `.jsonl` 照常。rollout 里没有单请求费用，Codex 记录不参与 Credits 统计；耗时按各行时间戳估算（含首字等待）。
+
+## 本地用量快照与同步
+
+用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
+
+- `GET /api/usage` 只读取最后成功快照，不扫描原始会话日志；数据库为空时明确返回 `snapshotAvailable: false`。
+- `POST /api/usage/sync` 在独立 worker 中执行扫描、解析和事务写入，同进程重叠请求共享同一轮同步。
+- `GET /api/usage/sync` 查询导入状态、revision、最后成功时间与错误；同步失败不会清空旧快照。
+- worker 默认最长运行 10 分钟，可通过 **USAGE_SYNC_TIMEOUT_MS** 调整（毫秒）。超时后释放本轮请求，可重新同步。
 
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 

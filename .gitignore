@@ -30,6 +30,9 @@
 # agent workspace
 .zcode/
 
+# local persisted usage snapshot
+/.data/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

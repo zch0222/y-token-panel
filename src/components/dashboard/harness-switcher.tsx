@@ -108,7 +108,7 @@ export function HarnessSwitcher({
                   )}
                   <span className="truncate">
                     {loading
-                      ? "正在扫描"
+                      ? "等待快照"
                       : item.id === "all"
                         ? `${sources.filter((candidate) => candidate.sourceAvailable).length}/${HARNESS_OPTIONS.length} 个来源可用`
                         : source

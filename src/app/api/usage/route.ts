@@ -1,17 +1,14 @@
-import { connection, NextResponse } from "next/server";
-import { scanUsage } from "@/lib/usage-scanner";
+import { connection } from "next/server";
+import { createUsageSnapshotResponse } from "@/lib/usage-http";
 
 export async function GET() {
   await connection();
   try {
-    const usage = await scanUsage();
-    return NextResponse.json(usage, {
-      headers: { "Cache-Control": "no-store" },
-    });
+    return createUsageSnapshotResponse();
   } catch (error) {
-    console.error("Failed to read local harness usage", error);
-    return NextResponse.json(
-      { error: "无法读取本地 Harness 用量记录" },
+    console.error("Failed to read persisted usage snapshot", error);
+    return Response.json(
+      { error: "无法读取本地用量快照，请检查数据库与迁移状态" },
       { status: 500 },
     );
   }

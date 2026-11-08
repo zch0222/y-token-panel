@@ -193,12 +193,31 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
 
 async function fetchUsageSnapshot(): Promise<UsageResponse> {
   const response = await fetch("/api/usage", { cache: "no-store" });
-  if (!response.ok) throw new Error("读取用量数据失败");
+  if (!response.ok) throw new Error("读取用量快照失败");
+  return (await response.json()) as UsageResponse;
+}
+
+async function syncUsageSnapshot(): Promise<UsageResponse> {
+  const response = await fetch("/api/usage/sync", {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { detail?: string; error?: string }
+      | null;
+    throw new Error(payload?.detail ?? payload?.error ?? "同步用量数据失败");
+  }
   return (await response.json()) as UsageResponse;
 }
 
 export function UsageDashboard() {
-  const [usageController] = useState(() => new UsageRefreshController(fetchUsageSnapshot));
+  const [usageController] = useState(
+    () =>
+      new UsageRefreshController(syncUsageSnapshot, undefined, {
+        querySnapshot: fetchUsageSnapshot,
+      }),
+  );
   const [usageState, setUsageState] = useState(usageController.getState);
   const { data, loading, refreshing, syncing, error } = usageState;
   const [range, setRange] = useState<RangeKey>("today");
@@ -321,10 +340,11 @@ export function UsageDashboard() {
   };
   const syncLabel = useMemo(() => {
     if (syncing) return "正在同步";
+    if (loading && !data) return "首次导入中";
     if (refreshing) return "后台刷新中";
     if (!data) return "同步数据";
     return "刚刚同步";
-  }, [data, refreshing, syncing]);
+  }, [data, loading, refreshing, syncing]);
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -393,7 +413,7 @@ export function UsageDashboard() {
           <HarnessSwitcher
             value={harness}
             sources={data?.sources ?? []}
-            loading={loading}
+            loading={!data}
             onChange={changeHarness}
           />
 
@@ -490,10 +510,16 @@ export function UsageDashboard() {
             </div>
           </div>
 
+          {!data && loading && (
+            <div className="mb-4 rounded-lg border border-sky-500/20 bg-sky-500/[0.06] px-4 py-3 text-xs leading-5 text-sky-500">
+              首次导入正在后台 worker 中进行，页面与其他本地 API 无需等待扫描完成。导入成功后会显示真实用量；空数据库不会按 0 条真实记录展示。
+            </div>
+          )}
+
           {error && (
             <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               <CircleAlert className="size-4 shrink-0" />
-              <span className="flex-1">{error}，请确认本地数据目录可访问。</span>
+              <span className="flex-1">{error}，请检查本地数据目录和数据库状态。</span>
               <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
                 重试
               </Button>
@@ -516,6 +542,14 @@ export function UsageDashboard() {
                       <Skeleton className="mt-4 h-7 w-24" />
                     </div>
                   ))
+                ) : !data ? (
+                  <div className="col-span-full flex min-h-32 flex-col items-center justify-center px-6 py-8 text-center">
+                    <Database className="mb-3 size-6 text-muted-foreground/50" />
+                    <div className="text-sm font-medium">尚无可显示的用量快照</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      首次导入失败或尚未完成，不会将缺失数据显示为真实的 0 条用量。
+                    </p>
+                  </div>
                 ) : (
                   <>
                     <MetricCard
@@ -569,7 +603,7 @@ export function UsageDashboard() {
                   </>
                 )}
               </div>
-              {!loading &&
+              {data &&
                 (chartNotice ? (
                   <div className="flex h-[292px] flex-col items-center justify-center border-t border-border/70 px-6 text-center">
                     <CircleHelp className="mb-3 size-7 text-muted-foreground/50" strokeWidth={1.5} />
@@ -598,8 +632,12 @@ export function UsageDashboard() {
                 <Skeleton key={index} className="mt-3 h-12 w-full" />
               ))}
             </div>
-          ) : (
+          ) : data ? (
             <UsageTables records={filteredRecords} tab={tab} onTabChange={setTab} />
+          ) : (
+            <div className="panel px-5 py-10 text-center text-sm text-muted-foreground">
+              暂无已提交的用量快照。可点击“同步数据”重试，旧快照（如存在）不会因同步失败被清空。
+            </div>
           )}
 
           <footer className="mt-5 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground/75">

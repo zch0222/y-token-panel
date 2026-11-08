@@ -27,6 +27,11 @@ export interface UsageRefreshEnvironment {
   subscribeVisibility: (callback: () => void) => () => void;
 }
 
+export interface UsageRefreshOptions {
+  /** 首载同步前先查询持久化快照；空快照响应不会作为真实零用量展示。 */
+  querySnapshot?: () => Promise<UsageResponse>;
+}
+
 const browserEnvironment: UsageRefreshEnvironment = {
   setInterval: (callback, milliseconds) => window.setInterval(callback, milliseconds),
   clearInterval: (timer) => window.clearInterval(timer as number),
@@ -68,6 +73,7 @@ export class UsageRefreshController {
   constructor(
     private readonly fetchUsage: () => Promise<UsageResponse>,
     private readonly environment: UsageRefreshEnvironment = browserEnvironment,
+    private readonly options: UsageRefreshOptions = {},
   ) {}
 
   getState = (): UsageViewState => this.state;
@@ -133,6 +139,25 @@ export class UsageRefreshController {
 
     const promise = (async () => {
       try {
+        if (trigger === "initial" && this.options.querySnapshot) {
+          try {
+            const snapshot = await this.options.querySnapshot();
+            if (
+              generation === this.requestGeneration &&
+              snapshot.snapshotAvailable !== false
+            ) {
+              this.setState({
+                data: snapshot,
+                loading: false,
+                refreshing: true,
+                error: null,
+              });
+            }
+          } catch {
+            // 查询失败不妨碍后续独立同步重建快照；最终错误以同步结果为准。
+          }
+        }
+
         const payload = await this.fetchUsage();
         if (generation === this.requestGeneration) {
           this.setState({ data: payload, error: null });

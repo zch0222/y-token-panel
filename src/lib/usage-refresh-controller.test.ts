@@ -220,4 +220,71 @@ describe("UsageRefreshController", () => {
     });
     controller.stop();
   });
+
+  it("首载先展示持久化旧快照，再以后台同步结果替换", async () => {
+    const synchronized = deferred<UsageResponse>();
+    const sync = vi.fn(() => synchronized.promise);
+    const query = vi.fn(async () => ({ ...payload(1), revision: 4, snapshotAvailable: true }));
+    const controller = new UsageRefreshController(sync, createEnvironment().environment, {
+      querySnapshot: query,
+    });
+
+    const initial = controller.start();
+    await flushPromises();
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(controller.getState()).toMatchObject({
+      data: { syncedAt: 1, revision: 4 },
+      loading: false,
+      refreshing: true,
+    });
+
+    synchronized.resolve({ ...payload(2), revision: 5, snapshotAvailable: true });
+    await initial;
+    expect(controller.getState()).toMatchObject({
+      data: { syncedAt: 2, revision: 5 },
+      loading: false,
+      refreshing: false,
+      error: null,
+    });
+    controller.stop();
+  });
+
+  it("空数据库响应不写成真实数据，首次同步失败也没有伪造零用量", async () => {
+    const synchronized = deferred<UsageResponse>();
+    const controller = new UsageRefreshController(
+      () => synchronized.promise,
+      createEnvironment().environment,
+      {
+        querySnapshot: async () => ({
+          ...payload(0),
+          revision: 0,
+          snapshotAvailable: false,
+          sync: {
+            phase: "importing",
+            revision: 0,
+            hasSnapshot: false,
+            startedAt: 1,
+            syncedAt: null,
+            durationMs: null,
+            error: null,
+            recordCount: 0,
+          },
+        }),
+      },
+    );
+
+    const initial = controller.start();
+    await flushPromises();
+    expect(controller.getState()).toMatchObject({ data: null, loading: true, error: null });
+
+    synchronized.reject(new Error("import failed"));
+    await initial;
+    expect(controller.getState()).toMatchObject({
+      data: null,
+      loading: false,
+      error: "import failed",
+    });
+    controller.stop();
+  });
 });
