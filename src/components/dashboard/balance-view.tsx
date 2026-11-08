@@ -40,6 +40,7 @@ import {
   detectBalanceKind,
   formatBalanceNumber,
   formatRelativeTime,
+  formatResetCountdown,
   getBalanceKindLabel,
   getBalancePreset,
   isFixedBalancePreset,
@@ -100,6 +101,10 @@ interface ProviderFormPayload {
   kind: string;
   accessToken: string;
   userId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  organizationId: string;
+  projectId: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -111,7 +116,7 @@ const inputClass =
 
 // ── 供应商卡片 ────────────────────────────────────────────────
 
-function BalanceDataRows({ rows }: { rows: BalanceData[] }) {
+function BalanceDataRows({ rows, now }: { rows: BalanceData[]; now: number }) {
   return (
     <div className="space-y-3">
       {rows.map((row, index) => {
@@ -120,10 +125,19 @@ function BalanceDataRows({ rows }: { rows: BalanceData[] }) {
           row.total && row.total > 0 && row.used !== null && row.used !== undefined
             ? Math.min(1, Math.max(0, row.used / row.total))
             : null;
+        const resetCountdown =
+          !invalid && row.resetsAt ? formatResetCountdown(row.resetsAt, now) : null;
         return (
           <div key={`${row.planName ?? "balance"}-${index}`}>
             {row.planName && (
-              <div className="mb-1 text-[11px] text-muted-foreground">{row.planName}</div>
+              <div className="mb-1 flex min-w-0 items-baseline gap-2">
+                <span className="text-[11px] text-muted-foreground">{row.planName}</span>
+                {resetCountdown && (
+                  <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/80">
+                    {resetCountdown}
+                  </span>
+                )}
+              </div>
             )}
             <div className="flex min-w-0 items-baseline gap-2">
               {invalid ? (
@@ -260,7 +274,11 @@ function ProviderCard({
         <div className="truncate">
           {provider.kind === "newapi"
             ? `${provider.accessTokenMasked ?? "未设置 Token"} · 用户 ${provider.userId || "未设置"}`
-            : provider.apiKeyMasked || "未设置 Key"}
+            : provider.kind === "volcengine"
+              ? `${provider.accessKeyId || "未设置 AK"} · ${provider.secretAccessKeyMasked ?? "未设置 SK"}`
+              : provider.kind === "zhipu_team"
+                ? `${provider.apiKeyMasked || "未设置 Key"} · 组织 ${provider.organizationId || "未设置"} · 项目 ${provider.projectId || "未设置"}`
+                : provider.apiKeyMasked || "未设置 Key"}
         </div>
       </div>
 
@@ -270,7 +288,7 @@ function ProviderCard({
             尚未查询，点击右上角刷新获取余额
           </div>
         )}
-        {rows && rows.length > 0 && <BalanceDataRows rows={rows} />}
+        {rows && rows.length > 0 && <BalanceDataRows rows={rows} now={now} />}
         {failed && (
           <div className="mt-2 text-xs leading-5">
             {!keyInvalid && rows && rows.length > 0 && <div className="h-1" />}
@@ -394,6 +412,10 @@ function ProviderDialog({
   const [apiKey, setApiKey] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [userId, setUserId] = useState(editing?.userId ?? "");
+  const [accessKeyId, setAccessKeyId] = useState(editing?.accessKeyId ?? "");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [organizationId, setOrganizationId] = useState(editing?.organizationId ?? "");
+  const [projectId, setProjectId] = useState(editing?.projectId ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -407,7 +429,16 @@ function ProviderDialog({
     : templateKind !== "auto"
       ? (templateKind as BalanceKind)
       : (detected ?? "general");
-  const needsNewapiCredentials = resolvedKind === "newapi";
+  // 凭据表单按 kind 分流：newapi（Token+用户 ID）、volcengine（AK/SK）、
+  // zhipu_team（Key+组织/项目 ID），其余为单 API Key。
+  const credentialMode =
+    resolvedKind === "newapi"
+      ? "newapi"
+      : resolvedKind === "volcengine"
+        ? "volcengine"
+        : resolvedKind === "zhipu_team"
+          ? "zhipu_team"
+          : "apiKey";
 
   const selectPreset = (nextId: string | null) => {
     const next = nextId ? getBalancePreset(nextId) : undefined;
@@ -446,9 +477,27 @@ function ProviderDialog({
       setError("请填写供应商地址（Base URL）");
       return;
     }
-    if (resolvedKind === "newapi") {
+    if (credentialMode === "newapi") {
       if (!accessToken.trim() && !editing?.accessTokenMasked) {
         setError("new-api 中转站需要填写 Access Token");
+        return;
+      }
+    } else if (credentialMode === "volcengine") {
+      if (!accessKeyId.trim() && !editing?.accessKeyId) {
+        setError("请填写火山引擎 AccessKey ID");
+        return;
+      }
+      if (!secretAccessKey.trim() && !editing?.secretAccessKeyMasked) {
+        setError("请填写火山引擎 AccessKey Secret");
+        return;
+      }
+    } else if (credentialMode === "zhipu_team") {
+      if (!apiKey.trim() && !editing?.apiKeyMasked) {
+        setError("请填写 API Key");
+        return;
+      }
+      if (!organizationId.trim() || !projectId.trim()) {
+        setError("GLM 团队版需要填写组织 ID 与项目 ID");
         return;
       }
     } else if (!apiKey.trim() && !editing?.apiKeyMasked) {
@@ -465,6 +514,10 @@ function ProviderDialog({
         kind: preset ? preset.kind : templateKind,
         accessToken,
         userId,
+        accessKeyId,
+        secretAccessKey,
+        organizationId,
+        projectId,
       });
       if (message) setError(message);
     } catch (caught) {
@@ -666,7 +719,7 @@ function ProviderDialog({
               </>
             )}
 
-            {needsNewapiCredentials ? (
+            {credentialMode === "newapi" ? (
               <>
                 <label className="block space-y-1.5">
                   <span className="text-xs font-medium text-muted-foreground">
@@ -695,6 +748,68 @@ function ProviderDialog({
                     value={apiKey}
                     placeholder={editing ? "留空表示保持不变" : "推理用 Key，仅作记录"}
                     onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : credentialMode === "volcengine" ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">AccessKey ID</span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={accessKeyId}
+                    placeholder="火山引擎账号 AK（如 AKLT...）"
+                    onChange={(event) => setAccessKeyId(event.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    AccessKey Secret{editing?.secretAccessKeyMasked ? "（留空保持不变）" : ""}
+                  </span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={secretAccessKey}
+                    type="password"
+                    autoComplete="off"
+                    placeholder={editing?.secretAccessKeyMasked ? "••••••（不修改）" : "火山引擎账号 SK"}
+                    onChange={(event) => setSecretAccessKey(event.target.value)}
+                  />
+                </label>
+                <p className="text-[11px] leading-4 text-muted-foreground/80">
+                  用量查询走控制面 OpenAPI，需要火山引擎账号的 AccessKey（与推理 API Key 是两套凭据）。
+                </p>
+              </>
+            ) : credentialMode === "zhipu_team" ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    API Key{editing?.apiKeyMasked ? "（留空保持不变）" : ""}
+                  </span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={apiKey}
+                    type="password"
+                    autoComplete="off"
+                    placeholder={editing?.apiKeyMasked ? "••••••（不修改）" : "团队 API Key"}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">组织 ID</span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={organizationId}
+                    placeholder="请求头 bigmodel-organization 的值"
+                    onChange={(event) => setOrganizationId(event.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">项目 ID</span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={projectId}
+                    placeholder="请求头 bigmodel-project 的值"
+                    onChange={(event) => setProjectId(event.target.value)}
                   />
                 </label>
               </>
@@ -904,6 +1019,10 @@ export function BalanceView() {
               kind: payload.kind,
               accessToken: payload.accessToken,
               userId: payload.userId,
+              accessKeyId: payload.accessKeyId,
+              secretAccessKey: payload.secretAccessKey,
+              organizationId: payload.organizationId,
+              projectId: payload.projectId,
             }),
           },
         );

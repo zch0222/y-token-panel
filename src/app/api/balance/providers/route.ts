@@ -28,6 +28,10 @@ export async function POST(request: Request) {
       kind?: string;
       accessToken?: string;
       userId?: string;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+      organizationId?: string;
+      projectId?: string;
     };
     if (!body.name || !body.baseUrl) {
       return NextResponse.json(
@@ -42,6 +46,10 @@ export async function POST(request: Request) {
       kind: (body.kind as never) ?? "auto",
       accessToken: body.accessToken,
       userId: body.userId,
+      accessKeyId: body.accessKeyId,
+      secretAccessKey: body.secretAccessKey,
+      organizationId: body.organizationId,
+      projectId: body.projectId,
     });
     return NextResponse.json({ provider }, {
       headers: { "Cache-Control": "no-store" },

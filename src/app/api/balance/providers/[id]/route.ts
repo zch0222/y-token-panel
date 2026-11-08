@@ -12,15 +12,23 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/balance/pr
       kind?: string;
       accessToken?: string;
       userId?: string;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+      organizationId?: string;
+      projectId?: string;
     };
     const provider = await updateBalanceProvider(id, {
       name: body.name,
       baseUrl: body.baseUrl,
-      // apiKey / accessToken 留空字符串 = 不修改。
+      // apiKey / accessToken / secretAccessKey 留空字符串 = 不修改。
       apiKey: body.apiKey,
       kind: body.kind as never,
       accessToken: body.accessToken,
       userId: body.userId,
+      accessKeyId: body.accessKeyId,
+      secretAccessKey: body.secretAccessKey,
+      organizationId: body.organizationId,
+      projectId: body.projectId,
     });
     if (!provider) {
       return NextResponse.json({ error: "供应商不存在" }, { status: 404 });

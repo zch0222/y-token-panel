@@ -38,17 +38,69 @@ describe("detectBalanceKind", () => {
     expect(detectBalanceKind("https://relay.example.com")).toBeNull();
     expect(detectBalanceKind("")).toBeNull();
   });
+
+  it("识别 coding plan 供应商（对齐 cc-switch detect_provider）", () => {
+    expect(detectBalanceKind("https://api.kimi.com/coding/v1")).toBe("kimi");
+    expect(detectBalanceKind("https://api.kimi.ai/coding/v1/chat/completions")).toBe("kimi");
+    // 不带 /coding 的 Kimi 地址不是编程套餐入口
+    expect(detectBalanceKind("https://api.kimi.com/v1")).toBeNull();
+
+    expect(detectBalanceKind("https://api.minimaxi.com/v1")).toBe("minimax");
+    expect(detectBalanceKind("https://api.minimax.cn/anthropic")).toBe("minimax");
+    expect(detectBalanceKind("https://api.minimax.io/v1")).toBe("minimax");
+    // hostname 精确匹配：后缀域名不算命中（对齐 cc-switch codex_url_host_matches_any）
+    expect(detectBalanceKind("https://api.minimax.cn.example.com/v1")).toBeNull();
+    expect(detectBalanceKind("https://api.minimax.io.example.com/v1")).toBeNull();
+
+    expect(detectBalanceKind("https://opencode.ai/inference/go/anthropic")).toBe("opencode_go");
+    expect(detectBalanceKind("https://opencode.ai/inference/go/v1")).toBe("opencode_go");
+    expect(detectBalanceKind("https://opencode.ai/zen/go")).toBe("opencode_go");
+    expect(detectBalanceKind("https://opencode.ai/zen/go/v1")).toBe("opencode_go");
+    // Zen 按量版没有用量 API，不得命中
+    expect(detectBalanceKind("https://opencode.ai/zen/v1")).toBeNull();
+    expect(detectBalanceKind("https://opencode.ai/inference/v1")).toBeNull();
+
+    expect(detectBalanceKind("https://api.commandcode.ai/provider")).toBe("command_code");
+    expect(detectBalanceKind("https://api.commandcode.ai/provider/v1")).toBe("command_code");
+    expect(detectBalanceKind("https://commandcode.ai/provider")).toBeNull();
+
+    expect(detectBalanceKind("https://ark.cn-beijing.volces.com/api/plan/v3")).toBe("volcengine");
+    expect(detectBalanceKind("https://ark.cn-beijing.volces.com/api/coding")).toBe("volcengine");
+    // 按量付费入口没有套餐额度
+    expect(detectBalanceKind("https://ark.cn-beijing.volces.com/api/v3")).toBeNull();
+
+    expect(detectBalanceKind("https://api.zenmux.io/usage")).toBe("zenmux");
+  });
+
+  it("智谱 Coding Plan 与账户余额共用域名，检测仍归 zhipu（需预设显式区分）", () => {
+    expect(detectBalanceKind("https://open.bigmodel.cn/api/coding/paas/v4")).toBe("zhipu");
+    expect(detectBalanceKind("https://api.z.ai/api/coding/paas/v4")).toBe("zhipu");
+  });
 });
 
 describe("BALANCE_PROVIDER_PRESETS", () => {
   it("id 唯一，锁定地址互不重复且以 https 开头", () => {
     const ids = new Set(BALANCE_PROVIDER_PRESETS.map((preset) => preset.id));
     expect(ids.size).toBe(BALANCE_PROVIDER_PRESETS.length);
-    const urls = BALANCE_PROVIDER_PRESETS.flatMap((preset) =>
-      preset.variants?.map((variant) => variant.baseUrl) ?? (preset.baseUrl ? [preset.baseUrl] : []),
-    );
-    expect(new Set(urls).size).toBe(urls.length);
-    for (const url of urls) expect(url.startsWith("https://")).toBe(true);
+    const urlKinds = new Map<string, Set<string>>();
+    for (const preset of BALANCE_PROVIDER_PRESETS) {
+      const urls =
+        preset.variants?.map((variant) => variant.baseUrl) ?? (preset.baseUrl ? [preset.baseUrl] : []);
+      for (const url of urls) {
+        const kinds = urlKinds.get(url) ?? new Set<string>();
+        kinds.add(preset.kind);
+        urlKinds.set(url, kinds);
+      }
+    }
+    // 智谱家族（余额 / Coding Plan / 团队版）是同一站点的不同套餐，允许共用地址；
+    // 其余供应商的锁定地址必须互不重复。
+    const zhipuFamily = new Set(["zhipu", "zhipu_coding", "zhipu_team"]);
+    for (const [url, kinds] of urlKinds) {
+      expect(url.startsWith("https://")).toBe(true);
+      if (kinds.size > 1) {
+        for (const kind of kinds) expect(zhipuFamily.has(kind)).toBe(true);
+      }
+    }
   });
 
   it("每个 kind 恰好有一个预设，查询端点能按预设地址复现", () => {
@@ -56,7 +108,10 @@ describe("BALANCE_PROVIDER_PRESETS", () => {
       const sameKind = BALANCE_PROVIDER_PRESETS.filter((item) => item.kind === preset.kind);
       expect(sameKind).toHaveLength(1);
       const baseUrl = resolvePresetBaseUrl(preset, preset.variants?.[0].id ?? preset.id);
-      if (baseUrl !== null) expect(detectBalanceKind(baseUrl)).toBe(preset.kind);
+      // autoDetect: false 的预设（智谱 Coding Plan 系）与余额模板共用域名，跳过检测断言
+      if (baseUrl !== null && preset.autoDetect !== false) {
+        expect(detectBalanceKind(baseUrl)).toBe(preset.kind);
+      }
     }
   });
 });

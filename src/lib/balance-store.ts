@@ -61,6 +61,10 @@ export interface BalanceProviderInput {
   kind: BalanceKind | "auto";
   accessToken?: string;
   userId?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  organizationId?: string;
+  projectId?: string;
 }
 
 export interface BalanceProviderPatch {
@@ -70,6 +74,10 @@ export interface BalanceProviderPatch {
   kind?: BalanceKind | "auto";
   accessToken?: string;
   userId?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  organizationId?: string;
+  projectId?: string;
 }
 
 function emptyStore(): BalanceStoreFile {
@@ -143,6 +151,10 @@ function toProviderView(config: BalanceProviderConfig): BalanceProviderView {
     apiKeyMasked: maskApiKey(config.apiKey),
     accessTokenMasked: config.accessToken ? maskApiKey(config.accessToken) : undefined,
     userId: config.userId,
+    accessKeyId: config.accessKeyId,
+    secretAccessKeyMasked: config.secretAccessKey ? maskApiKey(config.secretAccessKey) : undefined,
+    organizationId: config.organizationId,
+    projectId: config.projectId,
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
@@ -180,7 +192,23 @@ export async function addBalanceProvider(input: BalanceProviderInput): Promise<B
   if (!baseUrl) throw new Error("请填写供应商地址（Base URL）");
   const kind = resolveKind(input.kind, baseUrl);
   const apiKey = input.apiKey.trim();
-  if (!apiKey && kind !== "newapi") throw new Error("请填写 API Key");
+  const accessKeyId = (input.accessKeyId ?? "").trim();
+  const secretAccessKey = (input.secretAccessKey ?? "").trim();
+  const organizationId = (input.organizationId ?? "").trim();
+  const projectId = (input.projectId ?? "").trim();
+  if (kind === "volcengine") {
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error("火山方舟需要填写账号 AccessKey ID 与 Secret（非推理 API Key）");
+    }
+  } else if (kind === "zhipu_team") {
+    if (!apiKey || !organizationId || !projectId) {
+      throw new Error("GLM 团队版需要填写 API Key、组织 ID 与项目 ID");
+    }
+  } else if (kind === "newapi") {
+    if (!(input.accessToken ?? "").trim()) throw new Error("请填写 Access Token");
+  } else if (!apiKey) {
+    throw new Error("请填写 API Key");
+  }
 
   const now = Date.now();
   const config: BalanceProviderConfig = {
@@ -191,6 +219,10 @@ export async function addBalanceProvider(input: BalanceProviderInput): Promise<B
     kind,
     accessToken: (input.accessToken ?? "").trim() || undefined,
     userId: (input.userId ?? "").trim() || undefined,
+    accessKeyId: accessKeyId || undefined,
+    secretAccessKey: secretAccessKey || undefined,
+    organizationId: organizationId || undefined,
+    projectId: projectId || undefined,
     createdAt: now,
     updatedAt: now,
   };
@@ -212,16 +244,32 @@ export async function updateBalanceProvider(
 
     const nextBaseUrl = (patch.baseUrl ?? config.baseUrl).trim().replace(/\/+$/, "");
     const nextKind = patch.kind ? resolveKind(patch.kind, nextBaseUrl) : config.kind;
-    // 留空 = 不修改 Key。
+    // 留空 = 不修改 Key / Secret。
     const nextApiKey = patch.apiKey !== undefined ? patch.apiKey.trim() : config.apiKey;
     const nextAccessToken =
       patch.accessToken !== undefined ? patch.accessToken.trim() || undefined : config.accessToken;
+    const nextAccessKeyId =
+      patch.accessKeyId !== undefined ? patch.accessKeyId.trim() || undefined : config.accessKeyId;
+    const nextSecretAccessKey =
+      patch.secretAccessKey !== undefined
+        ? patch.secretAccessKey.trim() || undefined
+        : config.secretAccessKey;
+    const nextOrganizationId =
+      patch.organizationId !== undefined
+        ? patch.organizationId.trim() || undefined
+        : config.organizationId;
+    const nextProjectId =
+      patch.projectId !== undefined ? patch.projectId.trim() || undefined : config.projectId;
 
     const credentialsChanged =
       nextKind !== config.kind ||
       nextBaseUrl !== config.baseUrl ||
       nextApiKey !== config.apiKey ||
-      nextAccessToken !== config.accessToken;
+      nextAccessToken !== config.accessToken ||
+      nextAccessKeyId !== config.accessKeyId ||
+      nextSecretAccessKey !== config.secretAccessKey ||
+      nextOrganizationId !== config.organizationId ||
+      nextProjectId !== config.projectId;
 
     config.name = patch.name !== undefined ? patch.name.trim() || config.name : config.name;
     config.baseUrl = nextBaseUrl;
@@ -229,6 +277,10 @@ export async function updateBalanceProvider(
     config.apiKey = nextApiKey;
     config.accessToken = nextAccessToken;
     config.userId = patch.userId !== undefined ? patch.userId.trim() || undefined : config.userId;
+    config.accessKeyId = nextAccessKeyId;
+    config.secretAccessKey = nextSecretAccessKey;
+    config.organizationId = nextOrganizationId;
+    config.projectId = nextProjectId;
     config.updatedAt = Date.now();
 
     // 凭据 / 端点变化后允许立即重新查询（清空节流与冷却），旧的额度快照不再可信。

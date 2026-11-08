@@ -10,7 +10,7 @@
 - 请求数、Tokens、Credits、缓存命中率趋势图（柱状图 / 面积图）
 - 请求日志、供应商、模型和项目聚合表格
 - 请求详情、分页、CSV 导出、自动刷新、深色 / 浅色主题
-- 余额查询面板：集中查询供应商账户余额，内置限流保护（见下文）
+- 余额查询面板：集中查询供应商账户余额与 GLM / Kimi 等编程套餐额度，内置限流保护（见下文）
 
 ## 启动
 
@@ -121,12 +121,21 @@ DeepSeek Harness（DSH）数据源是其本地会话日志：
 
 ## 余额查询
 
-「余额查询」视图支持查询供应商账户余额，查询口径与限流策略参考 cc-switch（`balance.rs` 与 usage 脚本模板）。支持：
+「余额查询」视图支持查询供应商账户余额与编程套餐（coding plan）额度，查询口径与限流策略参考 cc-switch（`balance.rs`、`coding_plan.rs` 与 usage 脚本模板）。支持：
 
 - **原生供应商**：DeepSeek（多币种钱包）、StepFun、SiliconFlow（.cn 人民币 / .com 美元）、OpenRouter（剩余 = 总额度 − 已用）、Novita AI、智谱 / Z.ai（账户余额报表，Key 不带 Bearer）
+- **编程套餐（coding plan）**：按 5 小时 / 周 / 月窗口展示已用百分比、剩余额度与重置倒计时
+  - **Kimi For Coding**（`api.kimi.com` / `api.kimi.ai`）：`GET /usages`，5 小时与周窗口绝对额度
+  - **GLM Coding Plan**（智谱个人版，国内 / 国际站）：`GET /api/monitor/usage/quota/limit`，Key 不带 Bearer；按量付费账户无套餐时自动回落查询账户余额
+  - **GLM Coding Plan 团队版**：同一额度接口加 `?type=2`，需 API Key + 组织 ID + 项目 ID
+  - **MiniMax Coding Plan**（`api.minimaxi.com` / `api.minimax.io`）：`coding_plan/remains`，剩余百分比反转为已用，无周限额套餐自动隐藏周窗口
+  - **火山方舟 Agent Plan / Coding Plan**：控制面 OpenAPI（`GetAFPUsage` → `GetCodingPlanUsage` 双 plan 自动探测），火山签名 V4；需填写火山引擎账号 AccessKey ID / Secret（与推理 API Key 是两套凭据）
+  - **OpenCode Go**：`GET /zen/go/v1/usage`，5 小时 / 周 / 月三窗口；403 表示 Key 有效但没有 Go 订阅
+  - **ZenMux**：直接 GET 用户配置的用量端点，窗口可含美元金额
+  - **Command Code**：`/alpha` 控制面接口（whoami → credits → subscriptions → summary），月度额度 + 5 小时 / 周窗口
 - **通用模板**：new-api 中转站（`/api/user/self`，Access Token + 用户 ID，500000 配额 = $1）、Sub2API（`/v1/usage`）、通用 `/user/balance`
 
-Base URL 命中已知供应商时自动识别模板，其余按所选模板查询。供应商配置与 Key 保存在本机（默认 `~/.y-token-panel/balance.json`，可用 **Y_TOKEN_PANEL_DATA_DIR** 指定其他根目录），接口只返回脱敏后的 Key（前 6 后 4）。
+Base URL 命中已知供应商时自动识别模板，其余按所选模板查询。智谱 Coding Plan 与账户余额共用域名，需在预设里显式选择。供应商配置与凭据保存在本机（默认 `~/.y-token-panel/balance.json`，可用 **Y_TOKEN_PANEL_DATA_DIR** 指定其他根目录），接口只返回脱敏后的凭据（Key 前 6 后 4）。
 
 ### 限流与防风控
 

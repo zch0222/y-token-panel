@@ -1,9 +1,11 @@
 /**
  * 余额查询的共享类型与纯工具（客户端可 import，不依赖服务端 API）。
  *
- * 查询端点与解析口径移植自 cc-switch（src-tauri/src/services/balance.rs
- * 与 UsageScriptModal.tsx 的 general / newapi / sub2api 模板）：
+ * 查询端点与解析口径移植自 cc-switch（src-tauri/src/services/balance.rs、
+ * coding_plan.rs 与 UsageScriptModal.tsx 的 general / newapi / sub2api 模板）：
  * - UsageData 风格的 BalanceData（planName/remaining/total/used/unit/isValid）
+ * - coding plan 套餐额度（Kimi / GLM / MiniMax / 火山方舟 / OpenCode Go /
+ *   ZenMux / Command Code），5 小时 / 周 / 月窗口以已用百分比呈现
  * - 零余额 / 负余额不判 Key 失效（cc-switch #8812 / #8175），交给 UI 红字显示
  */
 
@@ -14,6 +16,14 @@ export type BalanceKind =
   | "openrouter"
   | "novita"
   | "zhipu"
+  | "kimi"
+  | "zhipu_coding"
+  | "zhipu_team"
+  | "minimax"
+  | "volcengine"
+  | "opencode_go"
+  | "zenmux"
+  | "command_code"
   | "newapi"
   | "sub2api"
   | "general";
@@ -30,6 +40,8 @@ export interface BalanceData {
   used?: number | null;
   /** 计价单位：CNY / USD / % 等。 */
   unit?: string | null;
+  /** 窗口重置时间（ISO 8601）；coding plan 的 5 小时 / 周窗口使用。 */
+  resetsAt?: string | null;
   /** false = Key 已失效（401/403）；null/true = 未知或有效。 */
   isValid?: boolean | null;
   invalidMessage?: string | null;
@@ -54,6 +66,14 @@ export interface BalanceProviderConfig {
   accessToken?: string;
   /** newapi 类中转站的用户 ID（请求头 New-Api-User）。 */
   userId?: string;
+  /** 火山方舟控制面 OpenAPI 的 AccessKey ID（与推理 API Key 是两套凭据）。 */
+  accessKeyId?: string;
+  /** 火山方舟控制面 OpenAPI 的 AccessKey Secret。 */
+  secretAccessKey?: string;
+  /** 智谱团队版请求头 bigmodel-organization。 */
+  organizationId?: string;
+  /** 智谱团队版请求头 bigmodel-project。 */
+  projectId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -68,6 +88,10 @@ export interface BalanceProviderView {
   apiKeyMasked: string;
   accessTokenMasked?: string;
   userId?: string;
+  accessKeyId?: string;
+  secretAccessKeyMasked?: string;
+  organizationId?: string;
+  projectId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -102,12 +126,35 @@ export const BALANCE_KIND_OPTIONS: {
   { value: "openrouter", label: "OpenRouter", hint: "GET /api/v1/credits，剩余 = 总额度 - 已用" },
   { value: "novita", label: "Novita AI", hint: "GET /v3/user/balance" },
   { value: "zhipu", label: "智谱 / Z.ai", hint: "账户余额报表接口，Key 不带 Bearer" },
+  { value: "kimi", label: "Kimi For Coding", hint: "GET {coding 根地址}/usages，5 小时与周窗口额度" },
+  { value: "zhipu_coding", label: "GLM Coding Plan", hint: "GET /api/monitor/usage/quota/limit，5 小时与周窗口已用百分比" },
+  { value: "zhipu_team", label: "GLM Coding Plan 团队版", hint: "额度接口加 ?type=2，需组织 ID 与项目 ID" },
+  { value: "minimax", label: "MiniMax Coding Plan", hint: "GET /v1/api/openplatform/coding_plan/remains，剩余百分比反转" },
+  { value: "volcengine", label: "火山方舟套餐", hint: "控制面 OpenAPI（GetAFPUsage / GetCodingPlanUsage），需 AccessKey 签名" },
+  { value: "opencode_go", label: "OpenCode Go", hint: "GET /zen/go/v1/usage，5 小时 / 周 / 月三窗口" },
+  { value: "zenmux", label: "ZenMux", hint: "GET 用量端点，5 小时与 7 天窗口（可含美元金额）" },
+  { value: "command_code", label: "Command Code", hint: "/alpha 控制面接口，月度额度与 5 小时 / 周窗口" },
   { value: "newapi", label: "new-api 中转站", hint: "GET /api/user/self，需要 Access Token 与用户 ID" },
   { value: "sub2api", label: "Sub2API", hint: "GET /v1/usage，API Key 认证" },
   { value: "general", label: "通用模板", hint: "GET /user/balance，读取响应里的 balance 字段" },
 ];
 
-/** 对齐 cc-switch detect_provider：按 Base URL 识别已知供应商，识别不到返回 null。 */
+/** 对齐 cc-switch codex_url_host_matches_any：hostname 与候选完全相等才算命中。 */
+function urlHostMatchesAny(baseUrl: string, hosts: string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    host = baseUrl.toLowerCase();
+  }
+  return hosts.some((candidate) => host === candidate);
+}
+
+/**
+ * 对齐 cc-switch detect_provider：按 Base URL 识别已知供应商，识别不到返回 null。
+ * 智谱 Coding Plan（zhipu_coding / zhipu_team）与账户余额（zhipu）共用域名，
+ * 无法靠地址区分，不参与自动检测，需在预设里显式选择。
+ */
 export function detectBalanceKind(baseUrl: string): BalanceKind | null {
   const url = baseUrl.toLowerCase();
   if (url.includes("api.deepseek.com")) return "deepseek";
@@ -116,6 +163,21 @@ export function detectBalanceKind(baseUrl: string): BalanceKind | null {
   if (url.includes("openrouter.ai")) return "openrouter";
   if (url.includes("api.novita.ai")) return "novita";
   if (url.includes("bigmodel.cn") || url.includes("api.z.ai")) return "zhipu";
+  if (url.includes("api.kimi.com/coding") || url.includes("api.kimi.ai/coding")) return "kimi";
+  if (urlHostMatchesAny(url, ["api.minimaxi.com", "api.minimax.cn", "api.minimax.io"])) {
+    return "minimax";
+  }
+  if (url.includes("opencode.ai/zen/go") || url.includes("opencode.ai/inference/go")) {
+    // Zen 按量版（/zen/v1、/inference/v1）没有用量 API，刻意不命中。
+    return "opencode_go";
+  }
+  if (url.includes("zenmux")) return "zenmux";
+  if (url.includes("api.commandcode.ai/provider")) return "command_code";
+  if (url.includes("volces.com/api/plan") || url.includes("volces.com/api/coding")) {
+    // 仅命中 Agent Plan（/api/plan）与 Coding Plan（/api/coding）入口；
+    // 按量付费走 /api/v3 与 /api/compatible，没有套餐额度。
+    return "volcengine";
+  }
   return null;
 }
 
@@ -134,7 +196,7 @@ export interface BalancePresetVariant {
 
 /**
  * 供应商预设：固定厂商（DeepSeek 等）的地址自动填充且不可编辑；
- * new-api / Sub2API 这类自建站点地址由用户填写。
+ * new-api / Sub2API / ZenMux 这类自建站点地址由用户填写。
  */
 export interface BalanceProviderPreset {
   id: string;
@@ -146,17 +208,41 @@ export interface BalanceProviderPreset {
   baseUrl: string | null;
   /** 站点变体；有变体时锁定地址以所选变体为准。 */
   variants?: BalancePresetVariant[];
+  /**
+   * false = 锁定地址与其它 kind 共用域名（如智谱 Coding Plan 与账户余额），
+   * detectBalanceKind 无法区分，不参与自动检测，只能显式选择。
+   */
+  autoDetect?: boolean;
   /** 该供应商的凭据表单需求。 */
   fields: {
-    /** new-api 的推理 Key 仅作记录，可选。 */
-    apiKey: "required" | "optional";
+    /** 推理 API Key；optional = 仅作记录，none = 不需要。 */
+    apiKey: "required" | "optional" | "none";
     /** new-api 需要用户系统 Access Token 而非 API Key。 */
     accessToken: boolean;
     /** new-api 请求头 New-Api-User。 */
     userId: boolean;
+    /** 火山方舟控制面 AccessKey ID。 */
+    accessKeyId: boolean;
+    /** 火山方舟控制面 AccessKey Secret。 */
+    secretAccessKey: boolean;
+    /** 智谱团队版请求头 bigmodel-organization。 */
+    organizationId: boolean;
+    /** 智谱团队版请求头 bigmodel-project。 */
+    projectId: boolean;
   };
   hint: string;
 }
+
+/** 无额外凭据需求的默认表单（绝大多数供应商只要一把 API Key）。 */
+const API_KEY_FIELDS = {
+  apiKey: "required",
+  accessToken: false,
+  userId: false,
+  accessKeyId: false,
+  secretAccessKey: false,
+  organizationId: false,
+  projectId: false,
+} as const;
 
 /** 添加面板的预设列表：固定厂商在前，自建站点在后。 */
 export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
@@ -166,7 +252,7 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "DeepSeek",
     domain: "api.deepseek.com",
     baseUrl: "https://api.deepseek.com",
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /user/balance，多币种钱包",
   },
   {
@@ -179,7 +265,7 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
       { id: "siliconflow-cn", label: "国内站（CNY）", baseUrl: "https://api.siliconflow.cn" },
       { id: "siliconflow-com", label: "国际站（USD）", baseUrl: "https://api.siliconflow.com" },
     ],
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /v1/user/info，按站点显示 CNY / USD",
   },
   {
@@ -192,8 +278,105 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
       { id: "zhipu-cn", label: "国内站（CNY）", baseUrl: "https://open.bigmodel.cn" },
       { id: "zhipu-com", label: "国际站（USD）", baseUrl: "https://api.z.ai" },
     ],
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "账户余额报表接口，Key 不带 Bearer",
+  },
+  {
+    id: "kimi",
+    kind: "kimi",
+    label: "Kimi For Coding",
+    domain: "api.kimi.com / api.kimi.ai",
+    baseUrl: null,
+    variants: [
+      { id: "kimi-cn", label: "国内站", baseUrl: "https://api.kimi.com/coding/v1" },
+      { id: "kimi-global", label: "国际站", baseUrl: "https://api.kimi.ai/coding/v1" },
+    ],
+    fields: API_KEY_FIELDS,
+    hint: "GET /usages，展示 5 小时与周窗口额度",
+  },
+  {
+    id: "zhipu_coding",
+    kind: "zhipu_coding",
+    label: "GLM Coding Plan",
+    domain: "bigmodel.cn / z.ai",
+    baseUrl: null,
+    autoDetect: false,
+    variants: [
+      { id: "zhipu-cn-coding", label: "国内站", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
+      { id: "zhipu-com-coding", label: "国际站", baseUrl: "https://api.z.ai/api/coding/paas/v4" },
+    ],
+    fields: API_KEY_FIELDS,
+    hint: "套餐额度接口（quota/limit），按量账户无套餐时自动回落查余额",
+  },
+  {
+    id: "zhipu_team",
+    kind: "zhipu_team",
+    label: "GLM Coding Plan 团队版",
+    domain: "open.bigmodel.cn（仅国内站）",
+    baseUrl: "https://open.bigmodel.cn",
+    autoDetect: false,
+    fields: {
+      apiKey: "required",
+      accessToken: false,
+      userId: false,
+      accessKeyId: false,
+      secretAccessKey: false,
+      organizationId: true,
+      projectId: true,
+    },
+    hint: "额度接口加 ?type=2，需要 API Key + 组织 ID + 项目 ID",
+  },
+  {
+    id: "minimax",
+    kind: "minimax",
+    label: "MiniMax Coding Plan",
+    domain: "api.minimaxi.com / api.minimax.io",
+    baseUrl: null,
+    variants: [
+      { id: "minimax-cn", label: "国内站", baseUrl: "https://api.minimaxi.com" },
+      { id: "minimax-global", label: "国际站", baseUrl: "https://api.minimax.io" },
+    ],
+    fields: API_KEY_FIELDS,
+    hint: "GET /v1/api/openplatform/coding_plan/remains，剩余百分比反转为已用",
+  },
+  {
+    id: "volcengine",
+    kind: "volcengine",
+    label: "火山方舟套餐",
+    domain: "ark.cn-beijing.volces.com",
+    baseUrl: null,
+    variants: [
+      { id: "volc-agent", label: "Agent Plan 入口", baseUrl: "https://ark.cn-beijing.volces.com/api/plan" },
+      { id: "volc-coding", label: "Coding Plan 入口", baseUrl: "https://ark.cn-beijing.volces.com/api/coding" },
+    ],
+    fields: {
+      apiKey: "none",
+      accessToken: false,
+      userId: false,
+      accessKeyId: true,
+      secretAccessKey: true,
+      organizationId: false,
+      projectId: false,
+    },
+    hint: "控制面 OpenAPI 自动探测 Agent Plan / Coding Plan，需账号 AccessKey（非推理 Key）",
+  },
+  {
+    id: "opencode_go",
+    kind: "opencode_go",
+    label: "OpenCode Go",
+    domain: "opencode.ai",
+    baseUrl: "https://opencode.ai/inference/go/anthropic",
+    fields: API_KEY_FIELDS,
+    hint: "GET /zen/go/v1/usage，5 小时 / 周 / 月三窗口已用百分比",
+  },
+  {
+    id: "command_code",
+    kind: "command_code",
+    label: "Command Code",
+    domain: "api.commandcode.ai",
+    baseUrl: "https://api.commandcode.ai/provider",
+    fields: API_KEY_FIELDS,
+    hint: "/alpha 控制面接口，月度额度与 5 小时 / 周窗口",
   },
   {
     id: "openrouter",
@@ -201,7 +384,7 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "OpenRouter",
     domain: "openrouter.ai",
     baseUrl: "https://openrouter.ai",
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /api/v1/credits，剩余 = 总额度 - 已用",
   },
   {
@@ -210,7 +393,7 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "Novita AI",
     domain: "api.novita.ai",
     baseUrl: "https://api.novita.ai",
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /v3/user/balance",
   },
   {
@@ -219,7 +402,7 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "StepFun",
     domain: "api.stepfun.com",
     baseUrl: "https://api.stepfun.com",
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /v1/accounts",
   },
   {
@@ -228,7 +411,15 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "new-api 中转站",
     domain: "自建站点，地址自定义",
     baseUrl: null,
-    fields: { apiKey: "optional", accessToken: true, userId: true },
+    fields: {
+      apiKey: "optional",
+      accessToken: true,
+      userId: true,
+      accessKeyId: false,
+      secretAccessKey: false,
+      organizationId: false,
+      projectId: false,
+    },
     hint: "GET /api/user/self，需要 Access Token 与用户 ID",
   },
   {
@@ -237,8 +428,17 @@ export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
     label: "Sub2API",
     domain: "自建站点，地址自定义",
     baseUrl: null,
-    fields: { apiKey: "required", accessToken: false, userId: false },
+    fields: API_KEY_FIELDS,
     hint: "GET /v1/usage，API Key 认证",
+  },
+  {
+    id: "zenmux",
+    kind: "zenmux",
+    label: "ZenMux",
+    domain: "自建站点，地址自定义",
+    baseUrl: null,
+    fields: API_KEY_FIELDS,
+    hint: "GET 用量端点（地址即查询端点），5 小时与 7 天窗口",
   },
 ];
 
@@ -323,6 +523,22 @@ export function formatRelativeTime(ms: number, now = Date.now()): string {
   if (hours < 24) return `${hours} 小时前`;
   const days = Math.floor(hours / 24);
   return `${days} 天前`;
+}
+
+/** 窗口重置倒计时（coding plan 的 resetsAt）：已过期或无法解析返回 null。 */
+export function formatResetCountdown(resetsAt: string, now = Date.now()): string | null {
+  const target = Date.parse(resetsAt);
+  if (!Number.isFinite(target)) return null;
+  const delta = target - now;
+  if (delta <= 0) return null;
+  const seconds = Math.floor(delta / 1000);
+  if (seconds < 60) return `${seconds} 秒后重置`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟后重置`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分后重置`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天 ${hours % 24} 小时后重置`;
 }
 
 /** 格式化余额数字：保留至多 4 位小数并去掉尾随零（很多接口返回 0.0001 精度）。 */
