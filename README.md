@@ -102,7 +102,7 @@ Antigravity 数据源是其本地会话转录：
 ~/.gemini/antigravity-cli/brain/...（agy CLI，布局相同）
 ~~~
 
-可以通过 **ANTIGRAVITY_DATA_DIR** 指定另一个数据根目录（其下需有 `brain` 与 `conversation_summaries.db`）。字段语义按本机 Antigravity IDE 的 `resources/bin/language_server.exe` 与 `conversations/<id>.db` 反查确认：每行一个 step，只有 `PLANNER_RESPONSE` 与 `CHECKPOINT`（上下文压缩请求）带 `input_tokens` / `cache_read_tokens` / `output_tokens`；`input_tokens` 是不含缓存的新鲜输入（实测同一响应 input 24011、cache 117055，input 含缓存不可能成立），`output_tokens` 已包含思考（数据库里 thinking 289 + response 125 = output 414），转录里没有缓存写入与 Credits 字段。只导入状态为 `DONE` 且用量非零的响应，按会话 ID + step 索引去重。转录没有模型字段，模型按会话内 `Model Selection` 切换事件继承，缺失时记为「未知模型」；项目名取自 `conversation_summaries.db` 的工作区 URI。
+可以通过 **ANTIGRAVITY_DATA_DIR** 指定另一个数据根目录（其下需有 `brain` 与 `conversation_summaries.db`）。字段语义按本机 Antigravity IDE 的 `resources/bin/language_server.exe` 与 `conversations/<id>.db` 反查确认：每行一个 step，只有 `PLANNER_RESPONSE` 与 `CHECKPOINT`（上下文压缩请求）带 `input_tokens` / `cache_read_tokens` / `output_tokens`；`input_tokens` 是不含缓存的新鲜输入（实测同一响应 input 24011、cache 117055，input 含缓存不可能成立），`output_tokens` 已包含思考（数据库里 thinking 289 + response 125 = output 414），转录里没有缓存写入与 Credits 字段；`PLANNER_RESPONSE` 的耗时取自 `conversations/<id>.db` 的首字等待 + 流式 Duration（`steps.metadata` 的 generation 索引 → `gen_metadata` 字段 11/12），`CHECKPOINT` 的原生引用指向下一条生成，不计耗时。只导入状态为 `DONE` 且用量非零的响应，按会话 ID + step 索引去重。转录没有模型字段，模型按会话内 `Model Selection` 切换事件继承，缺失时记为「未知模型」；项目名取自 `conversation_summaries.db` 的工作区 URI。
 
 ## 本地用量快照与同步
 

@@ -115,10 +115,10 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
 }
 
 const SPEED_HELP =
-  "汇总速度 = Σ输出 Tokens ÷ Σ估算耗时（只统计输出 ≥ 200 且耗时 ≥ 1s 的请求）。CodeBuddy 会话日志没有精确计时，耗时按时间戳估算且含首字等待，结果偏低，仅作参考；ZCode 记录的是精确请求耗时（同样含首字等待）。";
+  "汇总速度 = Σ输出 Tokens ÷ Σ耗时（只统计输出 ≥ 200 且耗时 ≥ 1s 的请求）。CodeBuddy 等会话日志没有精确计时，耗时按时间戳估算且含首字等待，结果偏低，仅作参考；ZCode 与 Antigravity 记录的是精确请求耗时（同样含首字等待，Antigravity 为原生库的首字等待 + 流式时长）。";
 
 const REQUEST_SPEED_HELP =
-  "估算速度 = 输出 Tokens ÷ 估算耗时（含首字等待）。仅输出 ≥ 200 且耗时 ≥ 1s 的请求展示。";
+  "速度 = 输出 Tokens ÷ 耗时（含首字等待）。仅输出 ≥ 200 且耗时 ≥ 1s 的请求展示；Antigravity 使用原生库的精确耗时。";
 
 function RequestSpeedValue({ record }: { record: UsageRecord }) {
   const speed = formatEstimatedTokensPerSecond(record);
@@ -551,17 +551,17 @@ export function UsageTables({
                 <DetailItem label="计费 Credits" value={formatCredits(detail.credits, detail.hasCredit)} />
                 {detail.estimatedDurationMs !== undefined && (
                   <DetailItem
-                    label="估算耗时"
+                    label={detail.harness === "antigravity" ? "耗时" : "估算耗时"}
                     value={`${(detail.estimatedDurationMs / 1000).toFixed(1)} s`}
                   />
                 )}
                 {detail.estimatedDurationMs !== undefined && (
                   <DetailItem
-                    label="估算速度"
+                    label={detail.harness === "antigravity" ? "速度" : "估算速度"}
                     value={
                       formatEstimatedTokensPerSecond(detail) == null
-                        ? "—（未达估算门槛）"
-                        : `≈ ${formatEstimatedTokensPerSecond(detail)} tok/s`
+                        ? "—（未达速度门槛）"
+                        : `${detail.harness === "antigravity" ? "" : "≈ "}${formatEstimatedTokensPerSecond(detail)} tok/s`
                     }
                   />
                 )}
@@ -592,7 +592,9 @@ export function UsageTables({
                     : "输入 Tokens 已包含缓存读取；总 Tokens 采用原始 total_tokens，不重复累计。"
                   : "该 Harness 的本地记录未提供有效 Token 数值，仅展示 Credits 与请求信息。"}
                 {detail.estimatedDurationMs !== undefined &&
-                  " 速度与耗时为估算值：按会话时间戳推算（消息完成时刻 − 请求起点），含首字等待，仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。"}
+                  (detail.harness === "antigravity"
+                    ? " 耗时取自 Antigravity 原生会话库（首字等待 + 流式时长，含首字），速度 = 输出 Tokens ÷ 耗时；仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。"
+                    : " 速度与耗时为估算值：按会话时间戳推算（消息完成时刻 − 请求起点），含首字等待，仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。")}
               </p>
             </>
           )}

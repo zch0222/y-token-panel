@@ -139,6 +139,22 @@ describe("parseAntigravityTranscript", () => {
     );
   });
 
+  it("耗时只用于 PLANNER_RESPONSE：CHECKPOINT 即使有映射也不带 estimatedDurationMs", () => {
+    const content = [
+      step({ step_index: 1 }),
+      step({ step_index: 88, type: "CHECKPOINT", source: "SYSTEM" }),
+    ].join("\n");
+    const timings = new Map([
+      [1, 8013],
+      [88, 11000],
+    ]);
+    const records = parseAntigravityTranscript(content, "conv", "demo", { timings });
+    expect(records.map((record) => [record.id, record.estimatedDurationMs])).toEqual([
+      ["antigravity:conv:1", 8013],
+      ["antigravity:conv:88", undefined],
+    ]);
+  });
+
   it("同一 step_index 重复写入时取最后一条", () => {
     const content = [
       step({ step_index: 5, status: "RUNNING" }),

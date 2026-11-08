@@ -9,6 +9,11 @@ import type { UsageRecord } from "@/lib/usage";
  * 首字等待，所以采用 cc-switch 的估算门槛：输出不少于 200 token、估算耗时
  * 不短于 1 秒（门槛比精确口径的 100 token / 100ms 高，因为首字等待占比
  * 越大算出的速度越偏低）。
+ *
+ * Antigravity 的耗时来自原生会话库（首字等待 + 流式时长），但 cc-switch 仍把它
+ * 归入会话日志口径（data_source = agy_session，不是 proxy）：用整段耗时（含
+ * 首字）除以输出，门槛同样是 200 token / 1 秒。本机 184 条 agy 记录与 cc-switch
+ * 的 latency_ms 逐行一致，聚合速度也一致（108445 / 1456960 ms = 74.43 tok/s）。
  */
 export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 200;
 

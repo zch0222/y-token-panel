@@ -1,6 +1,7 @@
 import "server-only";
 import { discoverAntigravityTranscripts } from "@/lib/antigravity";
 import { parseAntigravityTranscript } from "@/lib/antigravity-session";
+import { readGenerationTimings } from "@/lib/antigravity-timing";
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
 import type { UsageStore } from "@/lib/usage-store";
 import { readWholeFileUsageIncremental } from "@/lib/wholefile-incremental";
@@ -17,6 +18,8 @@ export function readAntigravityUsageIncremental(
     harness: "antigravity",
     discover: discoverAntigravityTranscripts,
     parseFile: (file, content) =>
-      parseAntigravityTranscript(content, file.conversationId, file.project),
+      parseAntigravityTranscript(content, file.conversationId, file.project, {
+        timings: readGenerationTimings(file.conversationDbPath),
+      }),
   });
 }

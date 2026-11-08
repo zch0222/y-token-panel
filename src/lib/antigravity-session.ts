@@ -34,6 +34,9 @@ import { deriveProvider, type UsageRecord } from "@/lib/usage";
  *   同款）。从未出现切换的会话记为「未知模型」，不按当前供应商反推。
  * - 只导入 status === "DONE" 且至少一项用量非零的响应（cc-switch 同款）；
  *   转录没有计费字段，记录恒为 hasCredit: false。
+ * - 转录没有单请求耗时（created_at 只到秒、没有完成时刻）。PLANNER_RESPONSE 的
+ *   精确耗时由 antigravity-timing.ts 从原生库的首字 + 流式 Duration 读出后传入；
+ *   CHECKPOINT 的原生 generation 引用指向下一条生成，不参与耗时。
  */
 
 /** transcript 里可能出现的 step 字段；未知字段一律忽略。 */
@@ -96,10 +99,16 @@ function hasUsage(step: AntigravityTranscriptStep): boolean {
  * 单份转录 → 记录；全量 reader 与增量 reader 共用。同一 step_index 重复写入
  * 时取最后一条（Antigravity 会把 RUNNING 行改写成 DONE）。
  */
+export interface AntigravityParseOptions {
+  /** step 索引 → 原生库记录的精确耗时（毫秒）；只有 PLANNER_RESPONSE 使用。 */
+  timings?: ReadonlyMap<number, number>;
+}
+
 export function parseAntigravityTranscript(
   content: string,
   conversationId: string,
   project: string,
+  { timings }: AntigravityParseOptions = {},
 ): UsageRecord[] {
   const records = new Map<string, UsageRecord>();
   let currentModel: string | undefined;
@@ -136,6 +145,7 @@ export function parseAntigravityTranscript(
 
     const model = currentModel ?? UNKNOWN_MODEL;
     const requestId = `${conversationId}:${stepIndex}`;
+    const duration = step.type === "PLANNER_RESPONSE" ? timings?.get(stepIndex) : undefined;
     records.set(`antigravity:${requestId}`, {
       id: `antigravity:${requestId}`,
       requestId,
@@ -154,6 +164,7 @@ export function parseAntigravityTranscript(
       hasTokenUsage: true,
       credits: 0,
       hasCredit: false,
+      ...(duration === undefined ? {} : { estimatedDurationMs: duration }),
       status: "success",
     });
   }

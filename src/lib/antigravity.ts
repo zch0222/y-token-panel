@@ -6,6 +6,7 @@ import {
   parseAntigravityTranscript,
   projectLabelFromWorkspaceUris,
 } from "@/lib/antigravity-session";
+import { readGenerationTimings } from "@/lib/antigravity-timing";
 import type { IncrementalFileBase } from "@/lib/incremental-core";
 import type { HarnessUsage, UsageRecord } from "@/lib/usage";
 
@@ -45,6 +46,8 @@ export function antigravityRoots({
 export interface AntigravityTranscriptFile extends IncrementalFileBase {
   conversationId: string;
   project: string;
+  /** 原生会话库：提供每次生成的精确耗时（首字 + 流式）。 */
+  conversationDbPath: string;
 }
 
 export interface AntigravityDiscovery {
@@ -168,6 +171,7 @@ export async function discoverAntigravityTranscripts(
           mtimeMs: metadata.mtimeMs,
           conversationId: entry.name,
           project: projects.get(entry.name) ?? UNKNOWN_ANTIGRAVITY_PROJECT,
+          conversationDbPath: path.join(root, "conversations", `${entry.name}.db`),
         });
       } catch {
         skippedFiles += 1;
@@ -198,6 +202,7 @@ export async function readAntigravityUsage(
         content,
         file.conversationId,
         file.project,
+        { timings: readGenerationTimings(file.conversationDbPath) },
       )) {
         records.set(record.id, record);
       }
