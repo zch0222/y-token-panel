@@ -13,11 +13,15 @@ import type { HarnessUsage, UsageRecord } from "@/lib/usage";
  * 一层 workflows/wf_<id>/*.jsonl（目录布局与 cc-switch 的会话收集一致）。
  * 字段语义与解析口径见 src/lib/claude-session.ts 文件头。
  */
-export async function readClaudeUsage(): Promise<HarnessUsage> {
+export function claudeSource(): string {
   const root = process.env.CLAUDE_CONFIG_DIR
     ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
     : path.join(homedir(), ".claude");
-  const source = path.join(root, "projects");
+  return path.join(root, "projects");
+}
+
+export async function readClaudeUsage(): Promise<HarnessUsage> {
+  const source = claudeSource();
 
   const records: UsageRecord[] = [];
   const seen = new Set<string>();

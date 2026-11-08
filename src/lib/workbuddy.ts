@@ -17,16 +17,27 @@ import type { HarnessUsage, UsageRecord } from "@/lib/usage";
  *   用量同样真实发生，计入）。
  * 其余目录（workflows / tool-results / stdio 等）不含会话记录，不扫描。
  *
- * 配置根目录：优先面板注入用的 WORKBUDDY_DATA_DIR，其次 WorkBuddy 自身的
- * WORKBUDDY_CONFIG_DIR（bundle 内 getWorkbuddyConfigDir），默认 ~/.workbuddy。
+ * 配置根目录：优先读取 WORKBUDDY_DATA_DIR（面板测试覆盖及 WorkBuddy
+ * daemon-app-server-main.js 同名根目录变量），其次 WorkBuddy 自身的
+ * WORKBUDDY_CONFIG_DIR（workbuddy-product-config.js 的 resolveWorkbuddyConfigDir
+ * 与 codebuddy-lite-wb.mjs 的 getWorkbuddyConfigDir），默认 ~/.workbuddy。
+ * 注：workbuddy-paths2.js 中的 WORKBUDDY_INSTANCE_NUMBER 仅用于窗口名与 URI
+ * scheme，不改变配置目录；面板同进程同时读取 CodeBuddy，故此处故意不回退读取
+ * CODEBUDDY_CONFIG_DIR，避免把 WorkBuddy 误指到 CodeBuddy 目录。
  */
-export async function readWorkBuddyUsage(): Promise<HarnessUsage> {
-  const root = process.env.WORKBUDDY_DATA_DIR?.trim()
-    ? path.resolve(process.env.WORKBUDDY_DATA_DIR.trim())
-    : process.env.WORKBUDDY_CONFIG_DIR?.trim()
-      ? path.resolve(process.env.WORKBUDDY_CONFIG_DIR.trim())
+export function workBuddySource(): string {
+  const dataDir = process.env.WORKBUDDY_DATA_DIR?.trim();
+  const configDir = process.env.WORKBUDDY_CONFIG_DIR?.trim();
+  const root = dataDir
+    ? path.resolve(dataDir)
+    : configDir
+      ? path.resolve(configDir)
       : path.join(homedir(), ".workbuddy");
-  const source = path.join(root, "projects");
+  return path.join(root, "projects");
+}
+
+export async function readWorkBuddyUsage(): Promise<HarnessUsage> {
+  const source = workBuddySource();
 
   const records: UsageRecord[] = [];
   const seen = new Set<string>();

@@ -1,7 +1,7 @@
 import "server-only";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { claudeSource } from "@/lib/claude";
 import {
   parseClaudeTranscriptIncremental,
   type ClaudeParseContext,
@@ -46,13 +46,6 @@ interface ClaudeCursorState {
 }
 
 class RebuildRequired extends Error {}
-
-function claudeSource(): string {
-  const root = process.env.CLAUDE_CONFIG_DIR
-    ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
-    : path.join(homedir(), ".claude");
-  return path.join(root, "projects");
-}
 
 function parseContextOf(file: ClaudeFile): ClaudeParseContext {
   return {

@@ -24,14 +24,28 @@ function isSessionLogName(name: string): boolean {
   );
 }
 
-export async function readDshUsage(): Promise<HarnessUsage> {
-  // DSH 自身的 home 解析顺序（dsh-home-paths）：显式配置 > $DSH_HOME（空白视为
-  // 未设置）> ~/.dsh。会话固定在其下的 sessions/ 目录。
+function expandDshHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
+export function dshSource(): string {
+  // @deepseek-ai/dsh-home-paths 的 resolveDshHome：显式参数 > 非空白
+  // DSH_HOME > ~/.dsh，并只展开 ~、~/ 与 ~\；显式参数由调用方传入，
+  // 不是 settings.yaml 中的持久配置，面板无需虚构该配置项。
+  const fromEnv = process.env.DSH_HOME;
   const home =
-    process.env.DSH_HOME && process.env.DSH_HOME.trim() !== ""
-      ? path.resolve(process.env.DSH_HOME)
+    fromEnv !== undefined && fromEnv.trim().length > 0
+      ? fromEnv
       : path.join(homedir(), ".dsh");
-  const source = path.join(home, "sessions");
+  return path.join(path.resolve(expandDshHome(home)), "sessions");
+}
+
+export async function readDshUsage(): Promise<HarnessUsage> {
+  const source = dshSource();
   const records: UsageRecord[] = [];
   const seen = new Set<string>();
   let scannedFiles = 0;

@@ -1,4 +1,3 @@
-import { performance } from "node:perf_hooks";
 import { readClaudeUsage } from "@/lib/claude";
 import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
@@ -25,18 +24,6 @@ import type { IncrementalUsageResult } from "@/lib/incremental-core";
 
 export type UsageReader = () => Promise<HarnessUsage>;
 
-interface UsageScannerOptions {
-  logger?: Pick<Console, "info">;
-  now?: () => number;
-}
-
-export interface UsageScannerStats {
-  requests: number;
-  scans: number;
-  pendingScans: number;
-  maxPendingScans: number;
-}
-
 function combineUsageResults(results: HarnessUsage[]): UsageResponse {
   const usage: UsageResponse = {
     records: results.flatMap((result) => result.records),
@@ -50,73 +37,6 @@ function combineUsageResults(results: HarnessUsage[]): UsageResponse {
   };
   usage.records.sort((a, b) => b.timestamp - a.timestamp);
   return usage;
-}
-
-/**
- * 在同一 Next.js 进程内合并重叠的用量扫描。
- *
- * 这里共享的是同一个 Promise，而不是互斥锁后的排队任务：等待中的 GET
- * 会获得同一轮结果，不会在前一轮完成后各自再扫描一次。
- */
-export function createUsageScanner(
-  readers: UsageReader[],
-  { logger = console, now = () => performance.now() }: UsageScannerOptions = {},
-) {
-  let inFlight: Promise<UsageResponse> | null = null;
-  let requestCount = 0;
-  let scanCount = 0;
-  let currentScanRequests = 0;
-  let maxPendingScans = 0;
-
-  const scan = (): Promise<UsageResponse> => {
-    requestCount += 1;
-
-    if (inFlight) {
-      currentScanRequests += 1;
-      return inFlight;
-    }
-
-    const scanId = ++scanCount;
-    currentScanRequests = 1;
-    maxPendingScans = Math.max(maxPendingScans, 1);
-    const startedAt = now();
-    logger.info(`[usage] scan #${scanId} started; totalScans=${scanCount}`);
-
-    const promise = (async () => {
-      let outcome = "completed";
-      let recordCount = 0;
-
-      try {
-        const results = await Promise.all(readers.map((read) => read()));
-        const usage = combineUsageResults(results);
-        recordCount = usage.records.length;
-        return usage;
-      } catch (error) {
-        outcome = "failed";
-        throw error;
-      } finally {
-        if (scanId === scanCount) inFlight = null;
-        const durationMs = Math.round((now() - startedAt) * 100) / 100;
-        logger.info(
-          `[usage] scan #${scanId} ${outcome} in ${durationMs}ms; ` +
-            `requests=${currentScanRequests}; totalScans=${scanCount}; records=${recordCount}`,
-        );
-      }
-    })();
-
-    inFlight = promise;
-    return promise;
-  };
-
-  return {
-    scan,
-    getStats: (): UsageScannerStats => ({
-      requests: requestCount,
-      scans: scanCount,
-      pendingScans: inFlight ? 1 : 0,
-      maxPendingScans,
-    }),
-  };
 }
 
 const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
@@ -144,12 +64,6 @@ const incrementalReaders: Array<{
   { harness: "codex", read: readCodexUsage, incremental: readCodexUsageIncremental },
   { harness: "dsh", read: readDshUsage, incremental: readDshUsageIncremental },
 ];
-
-const usageScanner = createUsageScanner(usageReaders.map(({ read }) => read));
-
-export function scanUsage(): Promise<UsageResponse> {
-  return usageScanner.scan();
-}
 
 /**
  * 单个来源失败时保留该来源的最后成功数据（M5 错误隔离）：失败来源的记录与

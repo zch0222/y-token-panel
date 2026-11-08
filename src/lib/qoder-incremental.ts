@@ -1,6 +1,5 @@
 import "server-only";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import {
   canonicalRecord,
@@ -15,7 +14,7 @@ import {
   type IncrementalStats,
   type IncrementalUsageResult,
 } from "@/lib/incremental-core";
-import { parseSessionLine } from "@/lib/qoder";
+import { parseSessionLine, qoderSource } from "@/lib/qoder";
 import { getProjectLabel, type HarnessUsage, type UsageRecord } from "@/lib/usage";
 import type {
   UsageIncrementalCommit,
@@ -46,12 +45,6 @@ interface QoderCursorState {
 }
 
 class RebuildRequired extends Error {}
-
-function qoderSource(): string {
-  return process.env.QODER_DATA_DIR
-    ? path.resolve(process.env.QODER_DATA_DIR)
-    : path.join(homedir(), ".qoder-cn", "projects");
-}
 
 function decodeCursorState(json: string | null): QoderCursorState | null {
   if (json === null) return null;

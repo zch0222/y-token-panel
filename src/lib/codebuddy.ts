@@ -5,10 +5,21 @@ import path from "node:path";
 import { parseSessionFile } from "@/lib/codebuddy-session";
 import { getProjectLabel, type HarnessUsage, type UsageRecord } from "@/lib/usage";
 
+export function codeBuddySource(): string {
+  if (process.env.CODEBUDDY_DATA_DIR) {
+    return path.resolve(process.env.CODEBUDDY_DATA_DIR);
+  }
+  // CodeBuddy 的 resolveCliHomeDir：CODEBUDDY_CONFIG_DIR 是整个配置根目录，
+  // 不是 projects 目录；空白视为未设置，值本身不做 trim。
+  const configured = process.env.CODEBUDDY_CONFIG_DIR;
+  const root = configured?.trim()
+    ? path.resolve(configured)
+    : path.join(homedir(), ".codebuddy");
+  return path.join(root, "projects");
+}
+
 export async function readCodeBuddyUsage(): Promise<HarnessUsage> {
-  const source = process.env.CODEBUDDY_DATA_DIR
-    ? path.resolve(process.env.CODEBUDDY_DATA_DIR)
-    : path.join(homedir(), ".codebuddy", "projects");
+  const source = codeBuddySource();
   const records: UsageRecord[] = [];
   const seen = new Set<string>();
   let scannedFiles = 0;

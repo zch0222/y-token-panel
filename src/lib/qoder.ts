@@ -138,10 +138,58 @@ export function parseSessionLine(
   };
 }
 
+const QODER_BLOCKED_DIR_NAMES = new Set([
+  ".git",
+  ".svn",
+  ".hg",
+  ".vscode",
+  ".idea",
+  ".husky",
+  ".github",
+  "node_modules",
+  "bower_components",
+]);
+
+function resolveQoderConfigDirName(raw: string | undefined): string {
+  if (raw === undefined || raw === "") return ".qoder-cn";
+  const normalized = raw.normalize("NFC");
+  const length = Array.from(normalized).length;
+  if (
+    length >= 1 &&
+    length <= 64 &&
+    !normalized.startsWith(" ") &&
+    !normalized.endsWith(" ") &&
+    !normalized.endsWith(".") &&
+    normalized !== "." &&
+    normalized !== ".." &&
+    /^[\p{L}\p{N}\p{M}._ -]+$/u.test(normalized) &&
+    !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(normalized) &&
+    !QODER_BLOCKED_DIR_NAMES.has(normalized.toLocaleLowerCase("en-US"))
+  ) {
+    return normalized;
+  }
+  throw new Error("QODERCN_CONFIG_DIR_NAME is not a valid configuration directory name.");
+}
+
+export function qoderSource(): string {
+  if (process.env.QODER_DATA_DIR) return path.resolve(process.env.QODER_DATA_DIR);
+  // 对齐本机 Qoder CN 主进程 WV/pxt 与 qoder-cn-agent-sdk 的 Na/Te：
+  // QODERCN_CONFIG_DIR 是完整配置根；未设置时用 QODERCN_CLI_HOME（缺省 homedir）
+  // 拼接 QODERCN_CONFIG_DIR_NAME（缺省 .qoder-cn），会话位于其 projects 下。
+  const configuredDir = process.env.QODERCN_CONFIG_DIR;
+  const root = configuredDir
+    ? path.resolve(configuredDir).normalize("NFC")
+    : path
+        .join(
+          path.resolve(process.env.QODERCN_CLI_HOME || homedir()),
+          resolveQoderConfigDirName(process.env.QODERCN_CONFIG_DIR_NAME),
+        )
+        .normalize("NFC");
+  return path.join(root, "projects");
+}
+
 export async function readQoderUsage(): Promise<HarnessUsage> {
-  const source = process.env.QODER_DATA_DIR
-    ? path.resolve(process.env.QODER_DATA_DIR)
-    : path.join(homedir(), ".qoder-cn", "projects");
+  const source = qoderSource();
   const records: UsageRecord[] = [];
   const seen = new Set<string>();
   let scannedFiles = 0;

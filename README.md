@@ -31,7 +31,7 @@ npm run dev
 ~/.codebuddy/projects/<project>/*.jsonl
 ~~~
 
-可以通过 **CODEBUDDY_DATA_DIR** 指定另一个 CodeBuddy projects 目录：
+可以通过 **CODEBUDDY_DATA_DIR** 直接指定另一个 CodeBuddy projects 目录，或通过 CodeBuddy 官方的 **CODEBUDDY_CONFIG_DIR** 指定整个配置根目录（其下需有 `projects`）；前者优先级更高：
 
 ~~~powershell
 $env:CODEBUDDY_DATA_DIR="D:\path\to\projects"
@@ -44,7 +44,15 @@ WorkBuddy（CodeBuddy 衍生的桌面 / CLI agent）数据源同样是本地会�
 ~/.workbuddy/projects/<压缩 cwd>/<会话>.jsonl（子 agent 在 <父会话>/subagents/ 下）
 ~~~
 
-可以通过 **WORKBUDDY_CONFIG_DIR**（与 WorkBuddy 自身的环境变量一致）指定另一个 `.workbuddy` 根目录（其下需有 `projects`），或用 **WORKBUDDY_DATA_DIR** 覆盖。字段语义按本机 WorkBuddy 2.137.1 的 CLI bundle（@genie/agent-cli 2.165.0）反查确认：用量在 `message`（assistant）/ `function_call` 条目的 `providerData`（归一化 `usage` + 提供方原始 `rawUsage`），Responses API 走独立 `model-usage` 事实条目；`usage.inputTokens` 是含缓存的总输入（total 口径），缓存读写按官方 `getCacheReadTokens` / `getCacheCreationTokens` 回退链取第一个正数（DeepSeek 的 `prompt_cache_miss_tokens` 计入缓存写入）；`rawUsage.credit` 是服务端逐请求上报的计费 Credits。同一 id 会先落无 usage 行、响应结束补全后重写，按 last-wins 去重；credits 按 `messageId` 去重后与 WorkBuddy 自身 workbuddy.db `session_usage.credit_json` 的聚合精确一致（本机实测对账相等）。项目目录直下 `agent-` 前缀的遗留文件跳过，`subagents/` 下的子 agent 用量计入。转录里没有单请求延迟，耗时沿 `parentId` 父链回溯到请求边界估算（含首字等待）。
+可以通过 **WORKBUDDY_DATA_DIR** 或 **WORKBUDDY_CONFIG_DIR**（与 WorkBuddy 自身的环境变量一致）指定另一个 `.workbuddy` 根目录（其下需有 `projects`）；前者优先级更高。注：WorkBuddy 的 `WORKBUDDY_INSTANCE_NUMBER` 仅作用于窗口名与 URI scheme，不改变配置目录；面板同进程同时读取 CodeBuddy，故不会回退读取 `CODEBUDDY_CONFIG_DIR`。字段语义按本机 WorkBuddy 2.137.1 的 CLI bundle（@genie/agent-cli 2.165.0）反查确认：用量在 `message`（assistant）/ `function_call` 条目的 `providerData`（归一化 `usage` + 提供方原始 `rawUsage`），Responses API 走独立 `model-usage` 事实条目；`usage.inputTokens` 是含缓存的总输入（total 口径），缓存读写按官方 `getCacheReadTokens` / `getCacheCreationTokens` 回退链取第一个正数（DeepSeek 的 `prompt_cache_miss_tokens` 计入缓存写入）；`rawUsage.credit` 是服务端逐请求上报的计费 Credits。同一 id 会先落无 usage 行、响应结束补全后重写，按 last-wins 去重；credits 按 `messageId` 去重后与 WorkBuddy 自身 workbuddy.db `session_usage.credit_json` 的聚合精确一致（本机实测对账相等）。项目目录直下 `agent-` 前缀的遗留文件跳过，`subagents/` 下的子 agent 用量计入。转录里没有单请求延迟，耗时沿 `parentId` 父链回溯到请求边界估算（含首字等待）。
+
+Qoder CN 数据源是其本地会话 JSONL（递归读取项目目录）：
+
+~~~text
+~/.qoder-cn/projects/<项目>/**/*.jsonl
+~~~
+
+可以通过 **QODER_DATA_DIR** 直接覆盖 projects 目录。官方 **QODERCN_CONFIG_DIR** 指定完整配置根目录；未设置时对齐本机 Qoder CN 主进程与 SDK 规则，用 **QODERCN_CLI_HOME**（缺省用户目录）拼接 **QODERCN_CONFIG_DIR_NAME**（缺省 `.qoder-cn`）。`message.usage` 提供 Tokens 与 Credits；仅 `billable=true` 的 Credits 计入实际消耗，`billable=false` 的报告值单独保留。无上游请求 ID 时使用稳定的文件行号 ID，增量游标会持久化行号基准。
 
 ZCode 数据源是其本地用量库（SQLite，只读打开）：
 
@@ -52,7 +60,7 @@ ZCode 数据源是其本地用量库（SQLite，只读打开）：
 ~/.zcode/cli/db/db.sqlite（model_usage 表，join session 表取项目目录）
 ~~~
 
-可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。读取该库使用 `node:sqlite`；应用整体最低 Node.js 版本见“启动”。注意 ZCode 自身只保留最近 30 天的用量行。
+可以通过 **ZCODE_DATA_DIR** 指定另一个 `.zcode` 根目录（其下需有 `cli/db/db.sqlite`）。未设置该面板变量时，对齐本机 ZCode CLI（`zcode.cjs`）的解析顺序：`ZCODE_SESSION_DB_PATH` / `ZCODE_SESSION_DB`（按枚举顺序后者覆盖前者，非空字符串生效），随后读取 `~/.zcode/cli/config.json` 的 `storage.sessionDbPath`，最后回退默认库；`~/` 前缀展开到用户目录，其余路径按 `path.resolve` 解析，配置文件缺失、损坏或字段类型不合法时与 `zcode.cjs` 一样静默回退默认库。读取该库使用 `node:sqlite`；应用整体最低 Node.js 版本见“启动”。注意 ZCode 自身只保留最近 30 天的用量行。
 
 KCode（Kimi Code）数据源是其本地会话 wire 日志：
 
@@ -60,7 +68,7 @@ KCode（Kimi Code）数据源是其本地会话 wire 日志：
 ~/.kimi-code/sessions/<workspace>/<session>/agents/<agent>/wire.jsonl
 ~~~
 
-可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
+可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致，空白值忽略并支持 `~`、`~/`、`~\` 展开）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
 
 Claude Code 数据源是其本地会话转录：
 
@@ -79,6 +87,14 @@ Codex / ChatGPT（Codex CLI 与 Codex Desktop）数据源是其本地 rollout �
 
 可以通过 **CODEX_HOME**（与 Codex 自身的环境变量一致）指定另一个 `.codex` 根目录（其下需有 `sessions`）。字段语义按本机 Codex 的二进制与真实 rollout 反查确认，解析口径对齐 cc-switch 的会话导入：优先取每次请求的精确 `last_token_usage`，缺失时按 `total_token_usage` 累计差推；限额刷新重发的相同快照按来源去重；缓存读 / 写是 `input_tokens` 的不相交组成部分，输入 Tokens 按扣除缓存后的新鲜输入统计；子代理 fork 复制的父历史事件按签名序列剔除重放，翻页续写页恢复前序分段的累计基线（bounded 引用走字节区间校验）。读取压缩形态需要 Node.js 22.15+（`zlib.zstdDecompressSync`）；版本过低时压缩文件跳过，普通 `.jsonl` 照常。rollout 里没有单请求费用，Codex 记录不参与 Credits 统计；耗时按各行时间戳估算（含首字等待）。
 
+DeepSeek Harness（DSH）数据源是其本地会话日志：
+
+~~~text
+~/.dsh/sessions/<项目>/<会话>/session.<版本>.jsonl[.zstd]
+~~~
+
+可以通过 **DSH_HOME** 指定另一个 DSH 根目录；空白值按未设置处理，`~`、`~/` 和 `~\` 按 DSH 自身规则展开。逐帧压缩日志只解压新增完整帧，普通 JSONL 只读取新增完整行；`step/start` 与未完成行字节跨轮持久化。输入 Tokens 不含缓存读写，无 Credits 字段，耗时按 `step/start` 到响应事件估算。
+
 ## 本地用量快照与同步
 
 用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
@@ -89,7 +105,17 @@ Codex / ChatGPT（Codex CLI 与 Codex Desktop）数据源是其本地 rollout �
 - `GET /api/usage/export?…` 按同一筛选导出全部命中记录的 CSV。
 - `POST /api/usage/sync` 在独立 worker 中执行扫描、解析和事务写入，同进程重叠请求共享同一轮同步；只返回 revision 等小结果（约 0.2KB），不再回传全部记录，客户端按 revision 变化决定是否重查聚合视图。
 - `GET /api/usage/sync` 查询导入状态、revision、最后成功时间与错误；同步失败不会清空旧快照。
-- 前端刷新由 revision 驱动：数据未变化时自动同步只更新“上次同步”时间；滚动范围（当天等）保留按分钟失效以处理跨午夜。worker 默认最长运行 10 分钟，可通过 **USAGE_SYNC_TIMEOUT_MS** 调整（毫秒）。超时后释放本轮请求，可重新同步。
+- 前端刷新由 revision 驱动：设置中的“日志扫描间隔”只控制后台增量导入；数据未变化时自动同步只更新“上次同步”时间，统计视图不重复查询。滚动范围（当天等）保留按分钟失效以处理跨午夜。worker 默认最长运行 10 分钟，可通过 **USAGE_SYNC_TIMEOUT_MS** 调整（毫秒）。超时后释放本轮请求，可重新同步。
+
+### 架构、迁移与故障恢复
+
+- Next 主进程只处理 SQLite 查询与小结果响应；原始日志发现、解压和解析在一次性 `worker_threads` 中执行。同一进程内所有标签页和手动/自动同步共享一个 in-flight worker。
+- `usage_records` 是聚合与分页的事实来源；`usage_sources` 保存各来源摘要，`usage_dedup` 持久化全局去重账本，`session_log_sync` 保存文件游标、尾部指纹与 parser state，`usage_snapshots` 保存兼容 API 的最后成功响应。
+- schema v2 迁移在事务中执行，并校验 `application_id`。未知高版本、非本应用数据库或不完整 schema 会报错，不会删库重建。
+- 未变化文件不读取正文；DSH/Claude/Qoder 按完整帧或完整行续读，CodeBuddy/WorkBuddy/KCode 对变化文件整读，Codex 额外持久化父时间线与 deferred 依赖状态。文件集变化、可检测的重写/截断或指纹失配会触发对应来源级重建。
+- 单个来源失败时保留其最后成功记录与游标，其他来源仍可提交；下一轮自动重试失败来源。整轮失败不会清空快照。
+- 需要强制重建单个来源时，先停止面板并备份数据库，再删除 `session_log_sync` 中该 Harness 的行，下次同步会全量重扫该来源。需要完全重置时，在停止面板后备份并移除 `.data/usage.sqlite` 及其 `-wal` / `-shm` 文件；不要直接删除无法识别版本的线上数据库来绕过迁移错误。
+- 全量 reader 保留用于冷导入、来源级重建和一致性基线；legacy `GET /api/usage` 仅为外部兼容保留，页面不再调用。
 
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 

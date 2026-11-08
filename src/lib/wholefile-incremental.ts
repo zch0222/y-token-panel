@@ -16,14 +16,16 @@ import {
   type IncrementalStats,
   type IncrementalUsageResult,
 } from "@/lib/incremental-core";
+import { codeBuddySource } from "@/lib/codebuddy";
 import { parseSessionFile } from "@/lib/codebuddy-session";
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { kcodeRoot } from "@/lib/kcode";
 import {
   parseKcodeProjectsFile,
   parseKcodeWireFile,
   resolveKcodeProjectName,
 } from "@/lib/kcode-session";
+import { workBuddySource } from "@/lib/workbuddy";
 import { parseWorkBuddySession } from "@/lib/workbuddy-session";
 import { getProjectLabel, type HarnessId, type HarnessUsage, type UsageRecord } from "@/lib/usage";
 import type {
@@ -337,9 +339,7 @@ interface CodeBuddyFile extends IncrementalFileBase {
 }
 
 async function discoverCodeBuddyFiles(): Promise<WholeFileDiscovery<CodeBuddyFile>> {
-  const source = process.env.CODEBUDDY_DATA_DIR
-    ? path.resolve(process.env.CODEBUDDY_DATA_DIR)
-    : path.join(homedir(), ".codebuddy", "projects");
+  const source = codeBuddySource();
   const files: CodeBuddyFile[] = [];
   let scannedFiles = 0;
   let skippedFiles = 0;
@@ -400,12 +400,7 @@ interface WorkBuddyFile extends IncrementalFileBase {
 }
 
 async function discoverWorkBuddyFiles(): Promise<WholeFileDiscovery<WorkBuddyFile>> {
-  const root = process.env.WORKBUDDY_DATA_DIR?.trim()
-    ? path.resolve(process.env.WORKBUDDY_DATA_DIR.trim())
-    : process.env.WORKBUDDY_CONFIG_DIR?.trim()
-      ? path.resolve(process.env.WORKBUDDY_CONFIG_DIR.trim())
-      : path.join(homedir(), ".workbuddy");
-  const source = path.join(root, "projects");
+  const source = workBuddySource();
   const files: WorkBuddyFile[] = [];
   let scannedFiles = 0;
   let skippedFiles = 0;
@@ -492,9 +487,7 @@ interface KcodeFile extends IncrementalFileBase {
 }
 
 async function discoverKcodeFiles(): Promise<WholeFileDiscovery<KcodeFile>> {
-  const root = process.env.KIMI_CODE_HOME
-    ? path.resolve(process.env.KIMI_CODE_HOME)
-    : path.join(homedir(), ".kimi-code");
+  const root = kcodeRoot();
   const source = path.join(root, "sessions");
   const files: KcodeFile[] = [];
   let scannedFiles = 0;

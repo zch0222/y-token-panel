@@ -12,9 +12,15 @@ const databasePath = path.join(root, "usage.sqlite");
 function stubDataDirectories(): void {
   const variables = [
     "CODEBUDDY_DATA_DIR",
+    "CODEBUDDY_CONFIG_DIR",
     "WORKBUDDY_DATA_DIR",
+    "WORKBUDDY_CONFIG_DIR",
     "QODER_DATA_DIR",
+    "QODERCN_CONFIG_DIR",
+    "QODERCN_CLI_HOME",
     "ZCODE_DATA_DIR",
+    "ZCODE_SESSION_DB_PATH",
+    "ZCODE_SESSION_DB",
     "KIMI_CODE_HOME",
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
@@ -23,6 +29,7 @@ function stubDataDirectories(): void {
   for (const variable of variables) {
     vi.stubEnv(variable, path.join(root, "missing", variable));
   }
+  vi.stubEnv("QODERCN_CONFIG_DIR_NAME", "");
 }
 
 stubDataDirectories();

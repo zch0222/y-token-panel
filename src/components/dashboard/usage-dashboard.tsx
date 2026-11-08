@@ -130,15 +130,19 @@ const HARNESS_SOURCE_HINTS: Record<
 > = {
   codebuddy: {
     source: "~/.codebuddy/projects",
-    envHint: "CODEBUDDY_DATA_DIR 环境变量指定其他 projects 目录",
+    envHint: "CODEBUDDY_DATA_DIR 指定其他 projects 目录，或 CODEBUDDY_CONFIG_DIR 指定配置根目录",
+  },
+  workbuddy: {
+    source: "~/.workbuddy/projects",
+    envHint: "WORKBUDDY_DATA_DIR 或 WORKBUDDY_CONFIG_DIR 指定其他 .workbuddy 配置根目录",
   },
   qoder: {
     source: "~/.qoder-cn/projects",
-    envHint: "QODER_DATA_DIR 环境变量指定其他 projects 目录",
+    envHint: "QODER_DATA_DIR 指定其他 projects 目录，或 QODERCN_CONFIG_DIR 指定配置根目录",
   },
   zcode: {
     source: "~/.zcode/cli/db/db.sqlite",
-    envHint: "ZCODE_DATA_DIR 环境变量指定其他 .zcode 根目录（其下需有 cli/db/db.sqlite）",
+    envHint: "ZCODE_DATA_DIR 指定其他 .zcode 根目录；也跟随 ZCODE_SESSION_DB_PATH 与 cli/config.json",
   },
   kcode: {
     source: "~/.kimi-code/sessions",
@@ -708,16 +712,16 @@ export function UsageDashboard() {
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle>用量设置</DialogTitle>
-            <DialogDescription>配置本地数据刷新方式与查看统计口径。</DialogDescription>
+            <DialogDescription>配置本地日志扫描方式与查看统计口径。</DialogDescription>
           </DialogHeader>
           <div className="space-y-5 py-1">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="text-sm font-medium">自动刷新</div>
-                <div className="mt-1 text-xs text-muted-foreground">重新扫描本地会话日志</div>
+                <div className="text-sm font-medium">日志扫描间隔</div>
+                <div className="mt-1 text-xs text-muted-foreground">后台增量导入会话；统计视图仅在数据变化后刷新</div>
               </div>
               <Select value={String(autoRefresh)} onValueChange={(value) => setAutoRefresh(Number(value))}>
-                <SelectTrigger className="w-[130px]" aria-label="自动刷新间隔">
+                <SelectTrigger className="w-[130px]" aria-label="日志扫描间隔">
                   <SelectValue>
                     {autoRefresh === 0 ? "关闭" : autoRefresh === 30000 ? "每 30 秒" : autoRefresh === 60000 ? "每 1 分钟" : "每 5 分钟"}
                   </SelectValue>

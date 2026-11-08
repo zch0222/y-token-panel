@@ -1,9 +1,9 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { open, readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { dshSource } from "@/lib/dsh";
 import {
   decodeDshParserState,
   dshProjectLabel,
@@ -63,14 +63,6 @@ function isSessionLogName(name: string): boolean {
     name.startsWith("session.") &&
     (name.endsWith(".jsonl") || name.endsWith(".jsonl.zstd"))
   );
-}
-
-function dshSource(): string {
-  const home =
-    process.env.DSH_HOME && process.env.DSH_HOME.trim() !== ""
-      ? path.resolve(process.env.DSH_HOME)
-      : path.join(homedir(), ".dsh");
-  return path.join(home, "sessions");
 }
 
 async function discoverDshFiles(source: string): Promise<Discovery> {

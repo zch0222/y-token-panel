@@ -11,14 +11,28 @@ import type { HarnessUsage, UsageRecord } from "@/lib/usage";
 
 /**
  * 读取 Kimi Code（kcode）的本地会话 wire 记录。默认数据目录 ~/.kimi-code，
- * 可用 kcode 自身的 KIMI_CODE_HOME 环境变量替换（cc-switch 的 kimi_config
- * data_dir 同款），其下按 sessions/<workspace>/<session>/agents/<agent>/
- * wire.jsonl 组织。字段语义与解析口径见 src/lib/kcode-session.ts 文件头。
+ * 可用 kcode 自身的 KIMI_CODE_HOME 环境变量替换（本机 Kimi Code 主进程与
+ * cc-switch 的 kimi_config::data_dir 同款：空白忽略，主进程支持 ~ / ~/ / ~\
+ * 展开），其下按 sessions/<workspace>/<session>/agents/<agent>/wire.jsonl
+ * 组织。字段语义与解析口径见 src/lib/kcode-session.ts 文件头。
  */
-export async function readKcodeUsage(): Promise<HarnessUsage> {
-  const root = process.env.KIMI_CODE_HOME
-    ? path.resolve(process.env.KIMI_CODE_HOME)
+function expandKcodeHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
+export function kcodeRoot(): string {
+  const configured = process.env.KIMI_CODE_HOME?.trim();
+  return configured
+    ? path.resolve(expandKcodeHome(configured))
     : path.join(homedir(), ".kimi-code");
+}
+
+export async function readKcodeUsage(): Promise<HarnessUsage> {
+  const root = kcodeRoot();
   const source = path.join(root, "sessions");
 
   const records: UsageRecord[] = [];

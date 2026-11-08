@@ -1,8 +1,9 @@
 # `/api/usage` 性能问题与 cc-switch 方案调研报告
 
 > 调研日期：2026-11-08<br>
+> 最后更新：2026-11-09<br>
 > 调研对象：当前项目 `y-token-panel`，以及本机相邻目录中的 `cc-switch`（提交 `66e4362b`）<br>
-> 文档状态：调研完成，方案待实施<br>
+> 文档状态：方案已落地并完成 M0–M7 全量验收<br>
 > 关联文档：[用量性能改造里程碑与进度台账](./usage-api-performance-milestones.md)
 
 ## 1. 摘要
@@ -452,3 +453,15 @@ cc-switch 项目文档记录了两组基准：
 7. **全量一致性与并发回归**：确认性能优化没有改变统计口径。
 
 详细任务、状态和验收记录见[里程碑与进度台账](./usage-api-performance-milestones.md)。
+
+---
+
+## 11. 落地与最终验收摘要（2026-11-09）
+
+M0–M7 已全部落地并通过实测验收：
+
+- **最终架构**：原始会话日志由独立一次性 `worker_threads` 按各数据源策略增量导入（DSH 帧/行游标、Claude 字节游标 + 256KB 回看窗口、Qoder 行游标、CodeBuddy/WorkBuddy/KCode 未变化跳过 + 变化整读与伴随文件触发、Codex 共享 `CodexAssembly` + 父时间线/deferred 依赖缓存、ZCode SQLite 只读直查），原子写入 `.data/usage.sqlite`（schema v2）；Next 主进程只读 SQLite 提供聚合视图（`/api/usage/query`）、分页日志（`/api/usage/records`）、按 ID 详情与 CSV 导出，前端按 `revision` 变化驱动重查，前后端双层 single-flight 合并重叠同步。
+- **关键实测对比**（本机约 397 个会话文件、2.57 万条记录）：
+  - 页面统计首屏请求：改造前 `GET /api/usage` **74.8–178.3s / 12.3MB** → 改造后默认聚合视图 `GET /api/usage/query` **13.85–35.01ms / 9.47KB**（兼容快照 `GET /api/usage` **100.11–167.33ms**）。
+  - 后台同步：未变化增量同步 HTTP **769.01–971.44ms**（worker **350–525ms**，响应约 **0.23KB**）；20 并发 `POST /api/usage/sync` 共享同一轮扫描（总墙钟 **914.59ms**）；扫描期间 `GET /` 平均 **15.38ms**、P95 **21.88ms**。
+  - 一致性与长稳：8 来源真实冻结副本 **25,673** 条记录与旧全量实现逐条全字段一致；真实墙钟 **30.05 分钟** + Chrome 三标签页连续自动同步零错误、每页最大并发同步为 **1**，服务端与浏览器内存全程有界稳定；全仓 **29 个测试文件 / 390 项自动化测试**全部通过。
