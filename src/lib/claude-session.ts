@@ -250,6 +250,12 @@ export function claudeProjectLabel(
   return undefined;
 }
 
+/** 增量续读时携带的文件级黏性状态（游标 parser state 的一部分）。 */
+export interface ClaudeParseSeed {
+  /** 上一轮以文件为单位的会话项目根；回看窗口可能看不到文件首部的 cwd。 */
+  sessionProject?: string;
+}
+
 /**
  * 解析整个会话文件：单遍扫描建立对话链、块计时并按 message.id 去重收集
  * assistant 用量，随后生成 UsageRecord。耗时只给「写完整了的回复」估算：
@@ -259,13 +265,29 @@ export function claudeProjectLabel(
 export function parseClaudeTranscriptFile(
   content: string,
   context: ClaudeParseContext,
+  seed?: ClaudeParseSeed,
 ): UsageRecord[] {
+  return parseClaudeTranscriptIncremental(content, context, seed).records;
+}
+
+/**
+ * 与 parseClaudeTranscriptFile 同一解析体，额外返回文件级会话项目根，供
+ * 增量 reader 持久化到游标 parser state 并在下一轮作为 seed 恢复。传入
+ * 回看窗口 + 新增字节拼接的内容时，链与计时按窗口重建，窗口外的请求
+ * 起点不可见（与 cc-switch 的有界回看口径一致，宁可不估也不猜）。
+ */
+export function parseClaudeTranscriptIncremental(
+  content: string,
+  context: ClaudeParseContext,
+  seed?: ClaudeParseSeed,
+): { records: UsageRecord[]; sessionProject: string | null } {
   const chain = new Map<string, ClaudeChainNode>();
   const timings = new Map<string, ClaudeMessageTiming>();
   const messages = new Map<string, ClaudeAssistantCandidate>();
   // 会话项目根：文件里第一个 mangle 后等于目录名的 cwd 的叶子名。同文件的
-  // 记录共享它，请求执行时 cd 进的子目录不改变项目归组。
-  let sessionProject: string | undefined;
+  // 记录共享它，请求执行时 cd 进的子目录不改变项目归组。增量续读时以持久
+  // 化的值预热，回看窗口中的首个匹配与文件首部语义一致。
+  let sessionProject = seed?.sessionProject;
 
   for (const line of content.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -349,5 +371,5 @@ export function parseClaudeTranscriptFile(
       status: "success",
     });
   }
-  return records;
+  return { records, sessionProject: sessionProject ?? null };
 }

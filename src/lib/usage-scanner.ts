@@ -1,15 +1,26 @@
 import { performance } from "node:perf_hooks";
 import { readClaudeUsage } from "@/lib/claude";
+import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
 import { readDshUsage } from "@/lib/dsh";
-import { readDshUsageIncremental, type DshIncrementalResult } from "@/lib/dsh-incremental";
+import { readDshUsageIncremental } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
 import { readQoderUsage } from "@/lib/qoder";
+import { readQoderUsageIncremental } from "@/lib/qoder-incremental";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
+import {
+  readCodeBuddyUsageIncremental,
+  readKcodeUsageIncremental,
+  readWorkBuddyUsageIncremental,
+} from "@/lib/wholefile-incremental";
 import { readZcodeUsage } from "@/lib/zcode";
 import type { HarnessUsage, UsageResponse } from "@/lib/usage";
-import type { UsageStore } from "@/lib/usage-store";
+import type {
+  UsageIncrementalCommit,
+  UsageStore,
+} from "@/lib/usage-store";
+import type { IncrementalUsageResult } from "@/lib/incremental-core";
 
 export type UsageReader = () => Promise<HarnessUsage>;
 
@@ -118,27 +129,45 @@ const usageReaders: UsageReader[] = [
   readDshUsage,
 ];
 
+/** worker 专用：全量 reader 之外的持久游标增量路径（与全量 reader 同一解析体）。 */
+const incrementalReaders: Array<{
+  read: UsageReader;
+  incremental: (store: UsageStore) => Promise<IncrementalUsageResult>;
+}> = [
+  { read: readCodeBuddyUsage, incremental: readCodeBuddyUsageIncremental },
+  { read: readWorkBuddyUsage, incremental: readWorkBuddyUsageIncremental },
+  { read: readQoderUsage, incremental: readQoderUsageIncremental },
+  { read: readKcodeUsage, incremental: readKcodeUsageIncremental },
+  { read: readClaudeUsage, incremental: readClaudeUsageIncremental },
+  { read: readDshUsage, incremental: readDshUsageIncremental },
+];
+
 const usageScanner = createUsageScanner(usageReaders);
 
 export function scanUsage(): Promise<UsageResponse> {
   return usageScanner.scan();
 }
 
-/** worker 专用：其他 reader 保持原实现，仅 DSH 使用持久游标增量路径。 */
 export async function scanUsageForStorage(store: UsageStore): Promise<{
   usage: UsageResponse;
-  dsh: DshIncrementalResult;
+  incrementals: UsageIncrementalCommit[];
 }> {
-  let incremental: DshIncrementalResult | undefined;
-  const readers = usageReaders.map((read) =>
-    read === readDshUsage
-      ? async () => {
-          incremental = await readDshUsageIncremental(store);
-          return incremental.usage;
-        }
-      : read,
+  const incrementalByRead = new Map(
+    incrementalReaders.map(({ read, incremental }) => [read, incremental]),
   );
+  const transactions: UsageIncrementalCommit[] = [];
+  const readers = usageReaders.map((read) => {
+    const incremental = incrementalByRead.get(read);
+    if (!incremental) return read;
+    return async () => {
+      const result = await incremental(store);
+      transactions.push(result.transaction);
+      return result.usage;
+    };
+  });
   const usage = combineUsageResults(await Promise.all(readers.map((read) => read())));
-  if (!incremental) throw new Error("DSH 增量 reader 未返回事务状态");
-  return { usage, dsh: incremental };
+  if (transactions.length !== incrementalReaders.length) {
+    throw new Error("增量 reader 未全部返回事务状态");
+  }
+  return { usage, incrementals: transactions };
 }

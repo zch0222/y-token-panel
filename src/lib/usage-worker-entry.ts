@@ -8,8 +8,8 @@ export async function runUsageScanInWorker(databasePath: string): Promise<UsageC
   try {
     store.markSyncStarted();
     syncStarted = true;
-    const { usage, dsh } = await scanUsageForStorage(store);
-    return store.commitSnapshot(usage, Date.now(), dsh.transaction);
+    const { usage, incrementals } = await scanUsageForStorage(store);
+    return store.commitSnapshot(usage, Date.now(), incrementals);
   } catch (error) {
     if (syncStarted) {
       try {

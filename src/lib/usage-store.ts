@@ -511,15 +511,34 @@ export class UsageStore {
   commitSnapshot(
     usage: UsageResponse,
     now = Date.now(),
-    incremental?: UsageIncrementalCommit,
+    incrementals: UsageIncrementalCommit[] = [],
   ): UsageCommitResult {
     validateUsageForStorage(usage);
+    if (new Set(incrementals.map((incremental) => incremental.harness)).size !== incrementals.length) {
+      throw new Error("同一来源出现多个增量事务批次");
+    }
     const contentHash = createHash("sha256").update(snapshotContent(usage)).digest("hex");
 
     // hash 在事务外计算；代次判定、响应构造和全部写入必须在同一写事务内，
     // 防止另一个连接在两条语句之间提交不同代数据。
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      // 来源级重建的 resetDedup 只有在该来源确有记录或账本行时才需要强制
+      // 重写；来源长期不可用（如未安装）时的空 reset 不能让每轮 no-op 提交
+      // 都重写全部归一化记录。
+      const resetDedupHarnesses = incrementals
+        .filter((incremental) => incremental.resetDedup)
+        .filter((incremental) =>
+          (
+            this.db
+              .prepare(
+                `SELECT (EXISTS (SELECT 1 FROM usage_dedup WHERE harness = ?)
+                        OR EXISTS (SELECT 1 FROM usage_records WHERE harness = ?)) AS has_rows`,
+              )
+              .get(incremental.harness, incremental.harness) as { has_rows: number }
+          ).has_rows === 1,
+        )
+        .map((incremental) => incremental.harness);
       const previous = this.db
         .prepare("SELECT revision, content_hash FROM usage_snapshots WHERE id = 1")
         .get() as unknown as { revision: number; content_hash: string } | undefined;
@@ -545,13 +564,13 @@ export class UsageStore {
       };
       const responseJson = JSON.stringify(response);
 
-      if (changed || incremental?.resetDedup) {
+      if (changed || resetDedupHarnesses.length > 0) {
         // 全量候选不经过 dedup 过滤；普通提交保留历史账本。来源级重建则明确
         // 重置该来源账本，因为被截断/重写文件中的旧键可能已不再是有效历史。
         this.db.prepare("DELETE FROM usage_records").run();
         this.db.prepare("DELETE FROM usage_sources").run();
-        if (incremental?.resetDedup) {
-          this.db.prepare("DELETE FROM usage_dedup WHERE harness = ?").run(incremental.harness);
+        for (const harness of resetDedupHarnesses) {
+          this.db.prepare("DELETE FROM usage_dedup WHERE harness = ?").run(harness);
         }
 
         const insertRecord = this.db.prepare(`
@@ -614,7 +633,7 @@ export class UsageStore {
         }
       }
 
-      if (incremental) {
+      for (const incremental of incrementals) {
         if (incremental.resetCursors) {
           this.db.prepare("DELETE FROM session_log_sync WHERE harness = ?").run(incremental.harness);
         }

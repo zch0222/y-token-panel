@@ -2,9 +2,9 @@
 
 > 创建日期：2026-11-08<br>
 > 最后更新：2026-11-08<br>
-> 总体状态：**M2、M3 已完成；M1 仍待真实墙钟稳定性验收**<br>
-> 当前里程碑：**M3 已完成；下一步 M4（并保留 M1 验收事项）**<br>
-> 完成进度：**3 / 8 个里程碑**<br>
+> 总体状态：**M2、M3、M4 已完成；M1 仍待真实墙钟稳定性验收**<br>
+> 当前里程碑：**M4 已完成；下一步 M5（并保留 M1 验收事项）**<br>
+> 完成进度：**4 / 8 个里程碑**<br>
 > 调研依据：[用量性能调研报告](./usage-api-performance-research.md)
 
 ---
@@ -73,7 +73,7 @@
 | M1 | 前后端 single-flight 与 loading 修复 | **待验收** | 2026-11-08 | — | 本次提交 | 20 并发共享 1 轮扫描；281 项测试通过；真实墙钟 30 分钟验收待执行 |
 | M2 | 本地持久化与扫描/查询分离 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 生产快照 GET 总耗时 108.72–163.99ms；296 项测试通过；24,254 条全字段一致 |
 | M3 | DSH 帧级增量导入 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 真实冻结数据未变化读取 252.43–307.47ms、正文 0B；单帧追加 3.05–5.81ms；309 项测试通过 |
-| M4 | Claude 与普通 JSONL 增量 | 未开始 | — | — | — | — |
+| M4 | Claude 与普通 JSONL 增量 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 真实冻结数据 5 来源冷导入与旧全量逐字段全等；未变化同步 8.93–117.01ms / 0B；332 项测试通过 |
 | M5 | Codex 依赖缓存与其余 reader 优化 | 未开始 | — | — | — | — |
 | M6 | 聚合、分页与 revision 驱动刷新 | 未开始 | — | — | — | — |
 | M7 | 全量回归、性能验收与收尾 | 未开始 | — | — | — | — |
@@ -325,63 +325,67 @@
 
 ## 8. M4：Claude 与普通 JSONL 增量
 
-**状态：未开始**<br>
+**状态：已完成**<br>
 **前置：M2、M3。**<br>
-**目标：覆盖 Claude、Qoder 及适合普通 JSONL 游标的 reader，同时保持 parser 上下文。**
+**目标：覆盖 Claude、Qoder 及适合普通 JSONL 游标的 reader，同时保持 parser 上下文。**<br>
+**实施方案：Claude/Qoder 用最后完整 LF 行字节游标 + 游标前 64B 尾部指纹；Claude 续读前重解析游标前至多 256KB 回看窗口重建对话链与块计时，文件级 sessionProject 持久化到游标 parser state；Qoder 仅持久化已提交行数（无 request_id 兜底 ID 的行号基准）。CodeBuddy/WorkBuddy/KCode 因 parser 依赖游标前上下文（父链、last-wins 补写、RequestIndex 状态机与 pending 双向跨行）采用"未变化跳过 + 变化文件整读 + 持久 message ID 去重 + 同 ID 替换刷新"；KCode projects.json 注册表纳入重建触发。**<br>
+**实际实施：全部沿用 schema v2 与来源级最终事务；文件集变化、同尺寸元数据变化、截断或指纹失配触发来源级重建（与 M3/DSH 同边界）；增量结果统一按 `readNormalizedRecords` 键序规范化，避免 codebuddy/workbuddy parser 键序与 DB 读回不同导致内容哈希跨轮漂移；`commitSnapshot` 改为多来源增量事务数组，来源不可用的空 reset 不再强制全量重写。**
 
 ### 8.1 Claude
 
-- [ ] 未变化文件直接跳过。
-- [ ] 实现最后完整行字节游标。
-- [ ] 增加尾部指纹，识别同尺寸或更大范围重写。
-- [ ] 恢复对话链、消息计时和项目上下文。
-- [ ] 支持后续块补齐模型、stop reason、耗时和首字时间。
-- [ ] 读取失败时保留已提交进度。
-- [ ] 明确文件重写时重扫或跳过区间的策略及原因。
+- [x] 未变化文件直接跳过。
+- [x] 实现最后完整行字节游标。
+- [x] 增加尾部指纹，识别同尺寸或更大范围重写（同尺寸元数据变化与增长型前缀失配都回退来源级重建）。
+- [x] 恢复对话链、消息计时和项目上下文（256KB 有界回看窗口 + sessionProject 持久化恢复）。
+- [x] 支持后续块补齐模型、stop reason、耗时和首字时间（等输出/更大 output 候选按 stop_reason 优先规则替换已入库记录；首字时间本就不在面板 parser 口径内，与全量 reader 保持一致）。
+- [x] 读取失败时保留已提交进度。
+- [x] 明确文件重写时重扫或跳过区间的策略及原因（重写→来源级重建，理由见决策记录）。
 
 参考：[cc-switch Claude 增量实现](../../cc-switch/src-tauri/src/services/session_usage.rs#L625-L770)与[事务提交](../../cc-switch/src-tauri/src/services/session_usage.rs#L867-L954)。
 
 ### 8.2 Qoder
 
-- [ ] 评估逐行 parser 所需状态，优先采用普通字节游标。
-- [ ] 保持 request ID 去重、Credits、billable 和时间戳口径。
-- [ ] 覆盖半行、重写与递归目录新增文件。
+- [x] 评估逐行 parser 所需状态，优先采用普通字节游标（一行一条记录、无跨行状态，仅持久化 lineCount 供 `${file}:${lineIndex}` 兜底 ID 续号）。
+- [x] 保持 request ID 去重、Credits、billable 和时间戳口径（复用同一 `parseSessionLine`）。
+- [x] 覆盖半行、重写与递归目录新增文件（新增/删除文件按文件集变化触发来源级重建）。
 
 ### 8.3 CodeBuddy / WorkBuddy / KCode
 
-- [ ] 先实现未变化文件跳过。
-- [ ] 分析 parser 上下文后决定字节增量或变化文件整读。
-- [ ] 不为了统一抽象而丢失项目、会话、子 Agent 或耗时上下文。
-- [ ] 对整读路径使用持久去重和必要更新逻辑。
+- [x] 先实现未变化文件跳过。
+- [x] 分析 parser 上下文后决定字节增量或变化文件整读（三家的耗时父链、last-wins、状态机均依赖游标前内容，整读是保持口径的唯一方式）。
+- [x] 不为了统一抽象而丢失项目、会话、子 Agent 或耗时上下文（整读走与全量 reader 完全相同的解析体；KCode projects.json 变化触发重建重贴项目标签）。
+- [x] 对整读路径使用持久去重和必要更新逻辑（同 ID 记录被本轮解析结果替换，覆盖 WorkBuddy model-usage 后行胜出与 KCode 计时补齐）。
 
 Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services/session_usage_kimi.rs#L47-L67)。
 
 ### 验收标准
 
-- [ ] 各 reader 冷导入与当前全量结果一致。
-- [ ] 未变化文件不重复解析。
-- [ ] 追加内容只导入一次。
-- [ ] 半行补全、重写、截断和重启恢复测试通过。
-- [ ] Claude 的耗时与首字时间没有因增量读取大面积丢失。
-- [ ] Qoder Credits 与 billable 口径无回归。
-- [ ] CodeBuddy / WorkBuddy / KCode 项目与子 Agent 归组无回归。
+- [x] 各 reader 冷导入与当前全量结果一致。
+- [x] 未变化文件不重复解析。
+- [x] 追加内容只导入一次。
+- [x] 半行补全、重写、截断和重启恢复测试通过。
+- [x] Claude 的耗时与首字时间没有因增量读取大面积丢失（回看窗口内请求起点完整保留；超出 256KB 窗口的长回复按"宁可不估"口径不估耗时，与 cc-switch 一致）。
+- [x] Qoder Credits 与 billable 口径无回归。
+- [x] CodeBuddy / WorkBuddy / KCode 项目与子 Agent 归组无回归。
 
 ### 实测记录
 
+真实冻结副本（同机单 reader 热缓存；旧全量为同条件基线，与 M0 的 8 reader 并行冷数据不可直接对比）：
+
 | 数据源 | 冷导入 | 未变化同步 | 小追加同步 | 一致性结果 |
 | --- | ---: | ---: | ---: | --- |
-| Claude | 待填写 | 待填写 | 待填写 | 待填写 |
-| Qoder | 待填写 | 待填写 | 待填写 | 待填写 |
-| CodeBuddy | 待填写 | 待填写 | 待填写 | 待填写 |
-| WorkBuddy | 待填写 | 待填写 | 待填写 | 待填写 |
-| KCode | 待填写 | 待填写 | 待填写 | 待填写 |
+| Claude | 1,791.36ms（44 文件 / 4,691 条；旧全量 1,834.89ms） | 三次 98.71 / 106.47 / 97.31ms；正文 0B | 三次 315.83 / 305.14 / 367.97ms；正文 362B + 回看 256KB/次 | 冷导入与 3 轮追加后均与旧全量逐字段全等 |
+| Qoder | 619.34ms（49 文件 / 3,500 条；旧全量 567.90ms） | 三次 102.87 / 102.77 / 117.01ms；正文 0B | 三次 223.80 / 284.75 / 225.15ms；正文 260B + 指纹 64B | 同上 |
+| CodeBuddy | 95.05ms（5 文件 / 380 条；旧全量 70.05ms） | 三次 14.01 / 21.23 / 8.93ms；正文 0B | 三次 25.48 / 22.47 / 23.25ms；变化文件整读 395–1,185B | 同上 |
+| WorkBuddy | 154.95ms（5 文件 / 504 条；旧全量 150.41ms） | 三次 12.47 / 10.44 / 12.39ms；正文 0B | 三次 33.08 / 27.57 / 27.98ms；变化文件整读 9,242–9,998B | 同上 |
+| KCode | 155.91ms（7 文件 / 476 条；旧全量 162.18ms） | 三次 13.76 / 15.09 / 17.11ms；正文 0B | 三次 27.66 / 37.69 / 39.42ms；变化 wire 整读约 2.12MB | 同上 |
 
 ### 进度备注
 
-- 实际开始：—
-- 实际完成：—
-- Commit / PR：—
-- 当前备注：等待开始。
+- 实际开始：2026-11-08
+- 实际完成：2026-11-08
+- Commit / PR：本次提交
+- 当前备注：范围与验收全部完成。保留边界：五来源沿用 M3 的"文件集变化→来源级重建"（新会话文件出现即全量重扫该来源）；Claude 单条回复块跨度过大（>256KB）时增量轮不估耗时（窗口外起点不可见）；整读引擎下跨文件重复 message ID 且后位文件变化时，同 ID 替换可能选中与全量目录顺序不同的副本版本（无逐文件 provenance，与 DSH 已记录边界同类）；外部工具伪造 size/mtime 的改写仍无法检测，需清游标强制重建。legacy 快照聚合/序列化仍为 O(总记录数)，留到 M6。
 
 ---
 
@@ -560,11 +564,11 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 | 数据源 | 目标策略 | 所属里程碑 | 状态 | 实测摘要 |
 | --- | --- | --- | --- | --- |
 | DSH | Zstd 帧/JSONL 字节游标 + parser state | M3 | 已完成 | 未变化 252.43–307.47ms / 0B；单帧追加 3.05–5.81ms |
-| Claude | 字节游标 + 尾部指纹 + 对话链/计时上下文 | M4 | 未开始 | — |
-| Qoder | 普通 JSONL 字节游标 | M4 | 未开始 | — |
-| CodeBuddy | 未变化跳过；按 parser 上下文决定整读或字节增量 | M4 | 未开始 | — |
-| WorkBuddy | 未变化跳过；按 parser 上下文决定整读或字节增量 | M4 | 未开始 | — |
-| KCode | 未变化跳过；变化时整读并持久去重/更新 | M4 | 未开始 | — |
+| Claude | 字节游标 + 尾部指纹 + 对话链/计时上下文 | M4 | 已完成 | 未变化 97.31–106.47ms / 0B；小追加 305.14–367.97ms（362B + 256KB 回看） |
+| Qoder | 普通 JSONL 字节游标 | M4 | 已完成 | 未变化 102.77–117.01ms / 0B；小追加 223.80–284.75ms（260B + 64B 指纹） |
+| CodeBuddy | 未变化跳过；按 parser 上下文决定整读或字节增量 | M4 | 已完成 | 未变化 8.93–21.23ms / 0B；变化文件整读（实测 395–1,185B） |
+| WorkBuddy | 未变化跳过；按 parser 上下文决定整读或字节增量 | M4 | 已完成 | 未变化 10.44–12.47ms / 0B；变化文件整读（实测 9,242–9,998B） |
+| KCode | 未变化跳过；变化时整读并持久去重/更新 | M4 | 已完成 | 未变化 13.76–17.11ms / 0B；变化 wire 整读（实测约 2.12MB） |
 | Codex | 父时间线、replay prefix 和 deferred 依赖缓存 | M5 | 未开始 | — |
 | ZCode | 保持直接 SQLite 查询 | M5 | 未开始 | 当前直读约 31ms |
 
@@ -591,6 +595,13 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 | 2026-11-08 | M3 沿用 schema v2，以来源级最终事务提交 DSH 游标；文件集变化走来源级重建 | 复用当前归一化记录可避免新增逐文件缓存表；新增/删除副本时全量重算全局消息 ID winner，记录、去重、游标和快照不会部分提交 | 已确认，M3 实施 |
 | 2026-11-08 | DSH parser state 的未完成行保存原始字节 base64，而不是 UTF-8 字符串 | 一行及一个多字节字符都可能跨 zstd 帧；先拼接原始字节再按 LF 解码才能保持字段和无 ID 行 sha256 与旧实现一致 | 已确认，M3 实施 |
 | 2026-11-08 | DSH O(新增) 续读以正常 writer 的 append-only 与可观测元数据变化为前提 | size + mtime + cursor 前 64B 指纹可识别常见追加、截断和重写，但无法识别伪造元数据或保留尾部的增长型重写；若发生此类外部修改，清除 DSH `session_log_sync` 游标后下一轮强制全量恢复。完整前缀哈希会违背本阶段只读新增字节的目标 | 已确认，明确检测边界 |
+| 2026-11-08 | M4 五个来源全部沿用 M3 的"文件集变化→来源级重建"边界 | 无逐文件 provenance 时，新增文件可能按目录顺序排在既有副本之前，必须全量重算跨文件 first-wins winner；删除文件留下的记录也只有重建才能清除。与 DSH 保持同一语义，逐文件 provenance 留待后续里程碑评估 | 已确认，M4 实施 |
+| 2026-11-08 | Claude 增量用 256KB 有界回看窗口重建对话链/计时，不持久化整份链表；sessionProject 单独持久化 | 回复首块的父链通常就在游标前不远（cc-switch CHAIN_SEED_BYTES 同款量级）；链表全量持久化体积大且与"只读新增"目标冲突。窗口外起点的长回复按"宁可不估"不估耗时。sessionProject 是文件首行黏性状态，窗口可能看不到，必须持久化 | 已确认，M4 实施 |
+| 2026-11-08 | Claude 跨轮候选补齐规则：output 更大必替换；等 output 仅允许补充尚无耗时的记录 | 后续块快照 output 单调增长，更大 output 一定是更新信息；已有耗时的记录视为完整 winner，防止回看窗口截断把全量视角下的最终块劣化成窗口内候选 | 已确认，M4 实施 |
+| 2026-11-08 | CodeBuddy/WorkBuddy/KCode 采用"未变化跳过 + 变化文件整读 + 同 ID 替换刷新"，不做字节续读 | 三家 parser 都依赖游标之前的内容（CodeBuddy/WorkBuddy 耗时父链、WorkBuddy last-wins 补写与文件级 cwd、KCode RequestIndex 状态机 + pending 双向跨行）；字节续读必须持久化整套状态机且 wire fork/重放下按 messageId 幂等更安全。整读与全量 reader 共用同一解析体，一致性可证 | 已确认，M4 实施 |
+| 2026-11-08 | KCode 将 projects.json 作为伴随文件纳入重建触发（存 session_log_sync 游标行） | 注册表决定全部记录的 project 归组；逐文件替换只能刷新变化文件的记录，未变化 wire 的旧标签无法补齐，必须来源级重建 | 已确认，M4 实施 |
+| 2026-11-08 | 增量结果统一按 readNormalizedRecords 键序规范化（canonicalRecord） | codebuddy/workbuddy parser 在 status 之后追加 estimatedDurationMs，与 DB 读回键序不同；增量轮记录一半来自 DB 一半来自 parser，不规范化会让内容哈希跨轮漂移，造成假 changed 与 revision 抖动 | 已确认，M4 实施 |
+| 2026-11-08 | commitSnapshot 增量参数改为多来源事务数组；来源不可用的空 reset 不强制全量重写 | 6 个增量来源同一轮各自提交游标批次；未安装来源每轮返回空 reset，若无条件强制重写会让 no-op 轮反复重写全部归一化记录（24k+ 行），现仅在该来源确有记录/账本行时重写 | 已确认，M4 实施 |
 
 ---
 
@@ -649,6 +660,20 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 - 未完成事项：M1 真实墙钟 30 分钟验收仍独立保留；Claude/Qoder 等 JSONL reader 留到 M4；Codex 与其余 reader 留到 M5；全量响应和聚合分页留到 M6。
 - 下一步：开始 M4 Claude 与普通 JSONL 增量；若需处理非 append-only 外部改写，先清除 DSH 游标执行强制恢复。
 - 已同步更新：顶部摘要、总览表、M3 范围与必测复选框、性能结果、决策记录、数据源矩阵和进度备注。
+
+### 2026-11-08 — M4：Claude 与普通 JSONL 增量完成
+
+- 状态变化：未开始 → 进行中 → 已完成。
+- 本次完成：Claude/Qoder 最后完整 LF 行字节游标、64B 尾部指纹、未变化零正文读取、半行留待补全；Claude 256KB 回看窗口重建对话链与块计时、sessionProject 持久化恢复、跨轮后续块候选补齐（stop_reason / output / 耗时）；Qoder lineCount 持久化保持 `${file}:${lineIndex}` 兜底 ID 续号、request_id 全局 first-wins；CodeBuddy/WorkBuddy/KCode 共用整读引擎（未变化跳过 + 变化文件整读 + 持久 message ID 去重 + 同 ID 替换刷新 + last-wins/计时补齐生效）；KCode projects.json 伴随文件重建触发；五来源统一文件集变化/同尺寸/截断/指纹失配来源级重建与单文件失败保留进度；增量结果 canonicalRecord 键序规范化；`commitSnapshot` 支持多来源增量事务数组并优化空 reset 不强制重写。
+- 修改范围：新增 `src/lib/incremental-core.ts`、`claude-incremental.ts`、`qoder-incremental.ts`、`wholefile-incremental.ts` 及对应测试（3 个测试文件 22 项）；`claude-session.ts` 拆出 `parseClaudeTranscriptIncremental`（同一解析体，加可选 seed，原函数行为不变）；`qoder.ts` 导出 `parseSessionLine`；`usage-store.ts` 多增量事务与 resetDedup 重写门槛；`usage-scanner.ts`、`usage-worker-entry.ts` 接线 6 个增量 reader；`usage-store.test.ts` 增加多来源增量事务测试。
+- 测试命令与结果：`npm test` 通过 22 个文件 / 332 项；`npm run typecheck`、`npm run lint`、`npm run build` 均通过。专项覆盖五来源冷导入与旧全量一致、未变化零读取、小追加（含块补齐/last-wins/计时补齐生效）、半行与 UTF-8 跨轮拆分、回看窗口跨轮耗时、sessionProject 持久化、重启恢复、同尺寸重写/截断/新增/删除文件重建、跨文件 first-wins、兜底 ID 行号续接、projects.json 出现/消失/改名重建、多来源事务提交与重复批次拒绝。
+- 性能实测：真实冻结副本 276MB / 110 个 jsonl。Claude 44 文件 / 4,691 条：旧全量 1,834.89ms，冷导入 1,791.36ms，未变化三次 98.71 / 106.47 / 97.31ms（0B），小追加三次 315.83 / 305.14 / 367.97ms（正文 362B + 回看 256KB）。Qoder 49 文件 / 3,500 条：567.90ms / 619.34ms，未变化 102.87 / 102.77 / 117.01ms（0B），追加 223.80 / 284.75 / 225.15ms（260B + 64B）。CodeBuddy 5 文件 / 380 条：70.05ms / 95.05ms，未变化 14.01 / 21.23 / 8.93ms（0B），追加 25.48 / 22.47 / 23.25ms（整读 395–1,185B）。WorkBuddy 5 文件 / 504 条：150.41ms / 154.95ms，未变化 12.47 / 10.44 / 12.39ms（0B），追加 33.08 / 27.57 / 27.98ms（整读 9,242–9,998B）。KCode 7 文件 / 476 条：162.18ms / 155.91ms，未变化 13.76 / 15.09 / 17.11ms（0B），追加 27.66 / 37.69 / 39.42ms（整读约 2.12MB）。
+- 一致性验证：五来源冷导入记录与旧全量 reader canonical 逐字段全等；各 3 轮追加后的最终增量记录与追加后旧全量基线 canonical 逐字段全等；no-op 轮 revision 不提升。测量用的临时 vitest 文件与冻结副本已删除。
+- Commit / PR：本次提交。
+- 遇到的问题与决策：Claude 回看窗口首个版本把"窗口第一行是半行"当成无条件假设，导致 lookback 恰好等于整份前缀时首行被丢弃、跨轮耗时丢失，改为仅在窗口起点非文件头时跳到首个 LF 之后。codebuddy/workbuddy parser 键序与 DB 读回不同会引起内容哈希跨轮漂移，引入 canonicalRecord。WorkBuddy model-usage 事实条目的权威数值在 providerData.rawUsage（官方读取顺序 rawUsage 优先），测试 fixture 初版误改 message.usage 导致替换未生效。同尺寸等价重写、来源不可用每轮空 reset 强制重写等写放大路径均已在实现层处理。
+- 未完成事项：M1 真实墙钟 30 分钟验收仍独立保留；Codex 依赖缓存与 reader 错误隔离/有界并发留到 M5；legacy 全量响应约 12.7MB 与聚合分页留到 M6；新会话文件出现仍触发对应来源全量重扫（记录为边界，provenance 方案后续里程碑评估）。
+- 下一步：开始 M5 Codex 依赖缓存与其余 reader 优化。
+- 已同步更新：顶部摘要、总览表、M4 范围与验收复选框、实测结果、决策记录、数据源矩阵和进度备注。
 
 ---
 

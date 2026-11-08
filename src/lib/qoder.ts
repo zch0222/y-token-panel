@@ -70,7 +70,8 @@ function parseTimestamp(value: unknown): number | undefined {
   return undefined;
 }
 
-function parseSessionLine(
+/** 单行 → 记录；供全量 reader 与增量 reader 共用同一解析口径。 */
+export function parseSessionLine(
   line: string,
   project: string,
   file: string,

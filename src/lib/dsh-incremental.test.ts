@@ -80,7 +80,7 @@ describe("DSH 持久化帧级/行级增量导入", () => {
       syncedAt: now,
     };
     store.markSyncStarted(now);
-    store.commitSnapshot(usage, now + 10, dsh.transaction);
+    store.commitSnapshot(usage, now + 10, [dsh.transaction]);
     now += 1000;
     return dsh;
   }

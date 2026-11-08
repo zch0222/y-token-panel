@@ -272,12 +272,14 @@ describe("UsageStore", () => {
       updatedAt: 0,
     };
     store.markSyncStarted(100);
-    store.commitSnapshot(initial, 150, {
-      harness: "dsh",
-      resetCursors: true,
-      resetDedup: false,
-      cursors: [oldCursor],
-    });
+    store.commitSnapshot(initial, 150, [
+      {
+        harness: "dsh",
+        resetCursors: true,
+        resetDedup: false,
+        cursors: [oldCursor],
+      },
+    ]);
     const lastSuccess = store.getSnapshotJson();
 
     store.markSyncStarted(200);
@@ -288,15 +290,17 @@ describe("UsageStore", () => {
           syncedAt: initial.syncedAt + 1000,
         }),
         250,
-        {
-          harness: "dsh",
-          resetCursors: false,
-          resetDedup: false,
-          cursors: [
-            { ...oldCursor, fileSize: 20, cursorOffset: 15, tailFingerprint: "new" },
-            { ...oldCursor, filePath: "/tmp/dsh/invalid.jsonl", fileSize: 1, cursorOffset: 2 },
-          ],
-        },
+        [
+          {
+            harness: "dsh",
+            resetCursors: false,
+            resetDedup: false,
+            cursors: [
+              { ...oldCursor, fileSize: 20, cursorOffset: 15, tailFingerprint: "new" },
+              { ...oldCursor, filePath: "/tmp/dsh/invalid.jsonl", fileSize: 1, cursorOffset: 2 },
+            ],
+          },
+        ],
       ),
     ).toThrow(/游标范围非法/);
 
@@ -306,6 +310,56 @@ describe("UsageStore", () => {
     expect(store.getSessionLogStates("dsh")).toEqual([
       expect.objectContaining({ filePath: oldCursor.filePath, cursorOffset: 5, tailFingerprint: "old" }),
     ]);
+  });
+
+  it("多来源增量事务在同一提交中各自重建，空 reset 不强制重写", () => {
+    const store = openStore();
+    const claudeCursor = {
+      harness: "claude" as const,
+      filePath: "/tmp/claude/a.jsonl",
+      fileSize: 10,
+      mtimeMs: 100,
+      cursorOffset: 10,
+      parserStateJson: null,
+      tailFingerprint: "fp-claude",
+      lastError: null,
+      updatedAt: 0,
+    };
+    store.markSyncStarted(100);
+    const committed = store.commitSnapshot(
+      usage({ records: [record({ id: "claude:one" })] }),
+      150,
+      [
+        { harness: "claude", resetCursors: true, resetDedup: true, cursors: [claudeCursor] },
+        // 未安装来源的空 reset：无记录无账本，不应触发全量重写。
+        { harness: "qoder", resetCursors: true, resetDedup: true, cursors: [] },
+      ],
+    );
+    expect(committed).toMatchObject({ revision: 1, changed: true, recordCount: 1 });
+    expect(store.getSessionLogStates("claude")).toEqual([
+      expect.objectContaining({ filePath: claudeCursor.filePath, cursorOffset: 10 }),
+    ]);
+    expect(store.getSessionLogStates("qoder")).toEqual([]);
+
+    // 内容不变 + 无非空 reset：不重写，revision 保持。
+    const unchanged = store.commitSnapshot(
+      usage({ records: [record({ id: "claude:one" })], syncedAt: 200 }),
+      250,
+      [
+        { harness: "claude", resetCursors: false, resetDedup: false, cursors: [claudeCursor] },
+        { harness: "qoder", resetCursors: true, resetDedup: true, cursors: [] },
+      ],
+    );
+    expect(unchanged).toMatchObject({ revision: 1, changed: false });
+    expect(store.getDedupKeys("claude")).toEqual(["claude:one"]);
+
+    // 同一来源两个批次是程序错误，整批拒绝。
+    expect(() =>
+      store.commitSnapshot(usage(), 300, [
+        { harness: "claude", resetCursors: false, resetDedup: false, cursors: [] },
+        { harness: "claude", resetCursors: false, resetDedup: false, cursors: [] },
+      ]),
+    ).toThrow(/多个增量事务批次/);
   });
 
   it("Next 重启后可读取同一快照，中断导入会恢复为错误且保留数据", () => {
