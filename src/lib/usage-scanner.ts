@@ -1,3 +1,5 @@
+import { readAntigravityUsage } from "@/lib/antigravity";
+import { readAntigravityUsageIncremental } from "@/lib/antigravity-incremental";
 import { readClaudeUsage } from "@/lib/claude";
 import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
@@ -48,6 +50,7 @@ const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
   { harness: "claude", read: readClaudeUsage },
   { harness: "codex", read: readCodexUsage },
   { harness: "dsh", read: readDshUsage },
+  { harness: "antigravity", read: readAntigravityUsage },
 ];
 
 /** worker 专用：全量 reader 之外的持久游标增量路径（与全量 reader 同一解析体）。 */
@@ -63,6 +66,11 @@ const incrementalReaders: Array<{
   { harness: "claude", read: readClaudeUsage, incremental: readClaudeUsageIncremental },
   { harness: "codex", read: readCodexUsage, incremental: readCodexUsageIncremental },
   { harness: "dsh", read: readDshUsage, incremental: readDshUsageIncremental },
+  {
+    harness: "antigravity",
+    read: readAntigravityUsage,
+    incremental: readAntigravityUsageIncremental,
+  },
 ];
 
 /**

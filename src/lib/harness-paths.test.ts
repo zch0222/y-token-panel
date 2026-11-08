@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { antigravityRoots } from "@/lib/antigravity";
 import { claudeSource } from "@/lib/claude";
 import { codeBuddySource } from "@/lib/codebuddy";
 import { codexRoot } from "@/lib/codex";
@@ -28,6 +29,7 @@ const ENV_KEYS = [
   "KIMI_CODE_HOME",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "ANTIGRAVITY_DATA_DIR",
 ] as const;
 const original = new Map<string, string | undefined>();
 const temporaryRoots: string[] = [];
@@ -111,6 +113,20 @@ describe("Harness 配置路径与本机实现一致", () => {
     expect(codexRoot()).toBe(path.join(homedir(), ".codex"));
     process.env.CODEX_HOME = path.join("D:", "codex-custom");
     expect(codexRoot()).toBe(path.join("D:", "codex-custom"));
+  });
+
+  it("Antigravity 默认同时尝试 IDE 与 CLI 根，面板 DATA_DIR 覆盖为单一根", () => {
+    expect(antigravityRoots()).toEqual([
+      path.join(homedir(), ".gemini", "antigravity"),
+      path.join(homedir(), ".gemini", "antigravity-cli"),
+    ]);
+    process.env.ANTIGRAVITY_DATA_DIR = "  D:\\antigravity-data  ";
+    expect(antigravityRoots()).toEqual([path.resolve("D:\\antigravity-data")]);
+    process.env.ANTIGRAVITY_DATA_DIR = "   ";
+    expect(antigravityRoots()).toEqual([
+      path.join(homedir(), ".gemini", "antigravity"),
+      path.join(homedir(), ".gemini", "antigravity-cli"),
+    ]);
   });
 
   it("ZCode 面板 DATA_DIR 优先于官方会话库配置", async () => {

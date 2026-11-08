@@ -95,6 +95,15 @@ DeepSeek Harness（DSH）数据源是其本地会话日志：
 
 可以通过 **DSH_HOME** 指定另一个 DSH 根目录；空白值按未设置处理，`~`、`~/` 和 `~\` 按 DSH 自身规则展开。逐帧压缩日志只解压新增完整帧，普通 JSONL 只读取新增完整行；`step/start` 与未完成行字节跨轮持久化。输入 Tokens 不含缓存读写，无 Credits 字段，耗时按 `step/start` 到响应事件估算。
 
+Antigravity 数据源是其本地会话转录：
+
+~~~text
+~/.gemini/antigravity/brain/<会话>/.system_generated/logs/transcript.jsonl（紧凑版）
+~/.gemini/antigravity-cli/brain/...（agy CLI，布局相同）
+~~~
+
+可以通过 **ANTIGRAVITY_DATA_DIR** 指定另一个数据根目录（其下需有 `brain` 与 `conversation_summaries.db`）。字段语义按本机 Antigravity IDE 的 `resources/bin/language_server.exe` 与 `conversations/<id>.db` 反查确认：每行一个 step，只有 `PLANNER_RESPONSE` 与 `CHECKPOINT`（上下文压缩请求）带 `input_tokens` / `cache_read_tokens` / `output_tokens`；`input_tokens` 是不含缓存的新鲜输入（实测同一响应 input 24011、cache 117055，input 含缓存不可能成立），`output_tokens` 已包含思考（数据库里 thinking 289 + response 125 = output 414），转录里没有缓存写入与 Credits 字段。只导入状态为 `DONE` 且用量非零的响应，按会话 ID + step 索引去重。转录没有模型字段，模型按会话内 `Model Selection` 切换事件继承，缺失时记为「未知模型」；项目名取自 `conversation_summaries.db` 的工作区 URI。
+
 ## 本地用量快照与同步
 
 用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
@@ -112,7 +121,7 @@ DeepSeek Harness（DSH）数据源是其本地会话日志：
 - Next 主进程只处理 SQLite 查询与小结果响应；原始日志发现、解压和解析在一次性 `worker_threads` 中执行。同一进程内所有标签页和手动/自动同步共享一个 in-flight worker。
 - `usage_records` 是聚合与分页的事实来源；`usage_sources` 保存各来源摘要，`usage_dedup` 持久化全局去重账本，`session_log_sync` 保存文件游标、尾部指纹与 parser state，`usage_snapshots` 保存兼容 API 的最后成功响应。
 - schema v2 迁移在事务中执行，并校验 `application_id`。未知高版本、非本应用数据库或不完整 schema 会报错，不会删库重建。
-- 未变化文件不读取正文；DSH/Claude/Qoder 按完整帧或完整行续读，CodeBuddy/WorkBuddy/KCode 对变化文件整读，Codex 额外持久化父时间线与 deferred 依赖状态。文件集变化、可检测的重写/截断或指纹失配会触发对应来源级重建。
+- 未变化文件不读取正文；DSH/Claude/Qoder 按完整帧或完整行续读，CodeBuddy/WorkBuddy/KCode/Antigravity 对变化文件整读，Codex 额外持久化父时间线与 deferred 依赖状态。文件集变化、可检测的重写/截断或指纹失配会触发对应来源级重建。
 - 单个来源失败时保留其最后成功记录与游标，其他来源仍可提交；下一轮自动重试失败来源。整轮失败不会清空快照。
 - 需要强制重建单个来源时，先停止面板并备份数据库，再删除 `session_log_sync` 中该 Harness 的行，下次同步会全量重扫该来源。需要完全重置时，在停止面板后备份并移除 `.data/usage.sqlite` 及其 `-wal` / `-shm` 文件；不要直接删除无法识别版本的线上数据库来绕过迁移错误。
 - 全量 reader 保留用于冷导入、来源级重建和一致性基线；legacy `GET /api/usage` 仅为外部兼容保留，页面不再调用。

@@ -25,6 +25,7 @@ function stubDataDirectories(): void {
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "DSH_HOME",
+    "ANTIGRAVITY_DATA_DIR",
   ];
   for (const variable of variables) {
     vi.stubEnv(variable, path.join(root, "missing", variable));
