@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BALANCE_PROVIDER_PRESETS,
   detectBalanceKind,
   formatRelativeTime,
+  isPresetLockedBaseUrl,
+  matchBalancePreset,
   maskApiKey,
+  resolvePresetBaseUrl,
 } from "@/lib/balance";
 import {
   parseDeepSeekBalance,
@@ -33,6 +37,69 @@ describe("detectBalanceKind", () => {
   it("未知地址返回 null，交由用户显式选择模板", () => {
     expect(detectBalanceKind("https://relay.example.com")).toBeNull();
     expect(detectBalanceKind("")).toBeNull();
+  });
+});
+
+describe("BALANCE_PROVIDER_PRESETS", () => {
+  it("id 唯一，锁定地址互不重复且以 https 开头", () => {
+    const ids = new Set(BALANCE_PROVIDER_PRESETS.map((preset) => preset.id));
+    expect(ids.size).toBe(BALANCE_PROVIDER_PRESETS.length);
+    const urls = BALANCE_PROVIDER_PRESETS.flatMap((preset) =>
+      preset.variants?.map((variant) => variant.baseUrl) ?? (preset.baseUrl ? [preset.baseUrl] : []),
+    );
+    expect(new Set(urls).size).toBe(urls.length);
+    for (const url of urls) expect(url.startsWith("https://")).toBe(true);
+  });
+
+  it("每个 kind 恰好有一个预设，查询端点能按预设地址复现", () => {
+    for (const preset of BALANCE_PROVIDER_PRESETS) {
+      const sameKind = BALANCE_PROVIDER_PRESETS.filter((item) => item.kind === preset.kind);
+      expect(sameKind).toHaveLength(1);
+      const baseUrl = resolvePresetBaseUrl(preset, preset.variants?.[0].id ?? preset.id);
+      if (baseUrl !== null) expect(detectBalanceKind(baseUrl)).toBe(preset.kind);
+    }
+  });
+});
+
+describe("matchBalancePreset", () => {
+  it("固定厂商按 kind 反查预设", () => {
+    expect(matchBalancePreset("deepseek", "https://api.deepseek.com")).toEqual({
+      presetId: "deepseek",
+      variantId: "deepseek",
+    });
+    expect(matchBalancePreset("newapi", "https://relay.example.com")).toEqual({
+      presetId: "newapi",
+      variantId: "newapi",
+    });
+  });
+
+  it("有站点变体的按地址域名选变体，匹配不到取第一个", () => {
+    expect(matchBalancePreset("siliconflow", "https://api.siliconflow.cn/v1")).toEqual({
+      presetId: "siliconflow",
+      variantId: "siliconflow-cn",
+    });
+    expect(matchBalancePreset("zhipu", "https://api.z.ai/api/paas/v4")).toEqual({
+      presetId: "zhipu",
+      variantId: "zhipu-com",
+    });
+    expect(matchBalancePreset("siliconflow", "https://unknown.example.com")).toEqual({
+      presetId: "siliconflow",
+      variantId: "siliconflow-cn",
+    });
+  });
+
+  it("通用模板返回 null（表单落在自定义）", () => {
+    expect(matchBalancePreset("general", "https://api.example.com")).toBeNull();
+  });
+});
+
+describe("isPresetLockedBaseUrl", () => {
+  it("命中预设或变体的锁定地址", () => {
+    expect(isPresetLockedBaseUrl("https://api.deepseek.com")).toBe(true);
+    expect(isPresetLockedBaseUrl("https://api.siliconflow.com")).toBe(true);
+    expect(isPresetLockedBaseUrl("https://open.bigmodel.cn")).toBe(true);
+    expect(isPresetLockedBaseUrl("https://relay.example.com")).toBe(false);
+    expect(isPresetLockedBaseUrl("")).toBe(false);
   });
 });
 

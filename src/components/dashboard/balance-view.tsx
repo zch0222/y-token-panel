@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Check,
   CircleAlert,
   CircleX,
   Clock,
+  Lock,
   Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   Wallet,
 } from "lucide-react";
@@ -34,10 +36,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   BALANCE_KIND_OPTIONS,
+  BALANCE_PROVIDER_PRESETS,
   detectBalanceKind,
   formatBalanceNumber,
   formatRelativeTime,
   getBalanceKindLabel,
+  getBalancePreset,
+  isFixedBalancePreset,
+  isPresetLockedBaseUrl,
+  matchBalancePreset,
+  resolvePresetBaseUrl,
   type BalanceCacheEntry,
   type BalanceData,
   type BalanceKind,
@@ -319,7 +327,44 @@ function ProviderCard({
   );
 }
 
-// ── 添加 / 编辑弹窗 ──────────────────────────────────────────
+// ── 添加 / 编辑弹窗（两步式，对齐 cc-switch：先选预设，再按预设出表单）────────
+
+function PresetAvatar({ label, custom = false }: { label: string; custom?: boolean }) {
+  return (
+    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-xs font-semibold text-muted-foreground">
+      {custom ? <SlidersHorizontal className="size-3.5" /> : label.slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+
+function PresetRow({
+  icon,
+  label,
+  detail,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  detail: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="flex min-w-0 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-start transition-colors hover:border-ring/50 hover:bg-muted/50"
+    >
+      {icon}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium">{label}</span>
+        <span className="block truncate text-[11px] leading-4 text-muted-foreground" title={detail}>
+          {detail}
+        </span>
+      </span>
+    </button>
+  );
+}
 
 function ProviderDialog({
   open,
@@ -333,25 +378,94 @@ function ProviderDialog({
   /** 返回 null 表示成功（弹窗由父组件关闭），返回字符串为错误信息。 */
   onSubmit: (payload: ProviderFormPayload) => Promise<string | null>;
 }) {
+  // 编辑按已存配置反查预设后直接进表单；新增先选预设（null = 自定义）。
+  const initialMatch = editing ? matchBalancePreset(editing.kind, editing.baseUrl) : null;
+  const [step, setStep] = useState<"pick" | "form">(editing ? "form" : "pick");
+  const [presetId, setPresetId] = useState<string | null>(initialMatch?.presetId ?? null);
+  const [variantId, setVariantId] = useState<string>(initialMatch?.variantId ?? "");
   const [name, setName] = useState(editing?.name ?? "");
+  // 名称没手动改过时跟随预设切换自动填。
+  const [nameTouched, setNameTouched] = useState(Boolean(editing));
   const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? "");
+  // 自定义模式的查询模板；编辑通用模板供应商时回填它的 kind。
+  const [templateKind, setTemplateKind] = useState<string>(
+    editing && !initialMatch ? editing.kind : "auto",
+  );
   const [apiKey, setApiKey] = useState("");
-  const [kind, setKind] = useState<string>(editing?.kind ?? "auto");
   const [accessToken, setAccessToken] = useState("");
   const [userId, setUserId] = useState(editing?.userId ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const preset = presetId ? getBalancePreset(presetId) : undefined;
+  // 固定厂商：地址由预设（或站点变体）决定并锁定；可编辑预设返回 null。
+  const lockedBaseUrl = preset ? resolvePresetBaseUrl(preset, variantId) : null;
+
   const detected = detectBalanceKind(baseUrl);
-  const resolvedKind: BalanceKind = kind !== "auto" ? (kind as BalanceKind) : (detected ?? "general");
+  const resolvedKind: BalanceKind = preset
+    ? preset.kind
+    : templateKind !== "auto"
+      ? (templateKind as BalanceKind)
+      : (detected ?? "general");
   const needsNewapiCredentials = resolvedKind === "newapi";
+
+  const selectPreset = (nextId: string | null) => {
+    const next = nextId ? getBalancePreset(nextId) : undefined;
+    const nextLocked = next
+      ? next.variants
+        ? next.variants[0].baseUrl
+        : next.baseUrl
+      : null;
+    setPresetId(nextId);
+    setError(null);
+    setVariantId(next?.variants?.[0].id ?? nextId ?? "");
+    // 固定预设覆盖地址；切到可编辑预设 / 自定义时，预设填充过的地址清掉、手输的保留。
+    setBaseUrl(nextLocked ?? (isPresetLockedBaseUrl(baseUrl) ? "" : baseUrl));
+    if (!nameTouched) setName(next?.label ?? "");
+    setStep("form");
+  };
+
+  const switchVariant = (nextVariantId: string) => {
+    const variant = preset?.variants?.find((item) => item.id === nextVariantId);
+    if (!variant || nextVariantId === variantId) return;
+    setVariantId(nextVariantId);
+    setBaseUrl(variant.baseUrl);
+    setError(null);
+  };
 
   const submit = async () => {
     if (submitting) return;
+    const trimmedName = name.trim();
+    const trimmedBaseUrl = (lockedBaseUrl ?? baseUrl).trim();
+    // 本地先校验完整性；编辑时空凭据 = 保持不变（已有脱敏值时放行）。
+    if (!trimmedName) {
+      setError("请填写供应商名称");
+      return;
+    }
+    if (!trimmedBaseUrl) {
+      setError("请填写供应商地址（Base URL）");
+      return;
+    }
+    if (resolvedKind === "newapi") {
+      if (!accessToken.trim() && !editing?.accessTokenMasked) {
+        setError("new-api 中转站需要填写 Access Token");
+        return;
+      }
+    } else if (!apiKey.trim() && !editing?.apiKeyMasked) {
+      setError("请填写 API Key");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      const message = await onSubmit({ name, baseUrl, apiKey, kind, accessToken, userId });
+      const message = await onSubmit({
+        name: trimmedName,
+        baseUrl: trimmedBaseUrl,
+        apiKey,
+        kind: preset ? preset.kind : templateKind,
+        accessToken,
+        userId,
+      });
       if (message) setError(message);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存失败");
@@ -360,124 +474,263 @@ function ProviderDialog({
     }
   };
 
+  const fixedPresets = BALANCE_PROVIDER_PRESETS.filter((item) => isFixedBalancePreset(item));
+  const selfHostedPresets = BALANCE_PROVIDER_PRESETS.filter((item) => !isFixedBalancePreset(item));
+
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[460px]">
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>{editing ? "编辑供应商" : "添加供应商"}</DialogTitle>
+          <DialogTitle>
+            {step === "pick" ? "选择供应商" : editing ? "编辑供应商" : "添加供应商"}
+          </DialogTitle>
           <DialogDescription>
-            {editing
-              ? "修改供应商信息；API Key 留空表示保持不变。"
-              : "配置余额查询的供应商，Key 只保存在本机，不会上传。"}
+            {step === "pick"
+              ? "选择供应商预设：固定厂商的地址自动填充，也可选自定义填写任意地址。"
+              : editing
+                ? "修改供应商信息；凭据留空表示保持不变。"
+                : "配置余额查询的供应商，Key 只保存在本机，不会上传。"}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-1">
-          <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">名称</span>
-            <input
-              className={inputClass}
-              value={name}
-              maxLength={40}
-              placeholder="如 DeepSeek 主号"
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label className="block space-y-1.5">
-            <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-              Base URL
-              {baseUrl && (
-                <Badge variant={detected ? "default" : "outline"} className="text-[10px]">
-                  {detected ? `已识别 ${getBalanceKindLabel(detected)}` : "未识别，按所选模板查询"}
-                </Badge>
-              )}
-            </span>
-            <input
-              className={cn(inputClass, "font-mono text-xs")}
-              value={baseUrl}
-              placeholder="https://api.deepseek.com"
-              onChange={(event) => setBaseUrl(event.target.value)}
-            />
-          </label>
-          <div className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">查询模板</span>
-            <Select value={kind} onValueChange={(value) => setKind(value ?? "auto")}>
-              <SelectTrigger className="h-9 w-full border-border bg-card text-xs" aria-label="查询模板">
-                <SelectValue>
-                  {BALANCE_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? "自动检测"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {BALANCE_KIND_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
+
+        {step === "pick" ? (
+          <div className="space-y-4 py-1">
+            <div>
+              <div className="mb-1.5 px-0.5 text-[11px] font-medium text-muted-foreground">自定义</div>
+              <div className="grid grid-cols-2 gap-2">
+                <PresetRow
+                  icon={<PresetAvatar label="自定义供应商" custom />}
+                  label="自定义供应商"
+                  detail="填写任意地址，自动识别或选模板"
+                  onClick={() => selectPreset(null)}
+                />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1.5 px-0.5 text-[11px] font-medium text-muted-foreground">
+                官方供应商 · 地址固定
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {fixedPresets.map((item) => (
+                  <PresetRow
+                    key={item.id}
+                    icon={<PresetAvatar label={item.label} />}
+                    label={item.label}
+                    detail={item.domain}
+                    onClick={() => selectPreset(item.id)}
+                  />
                 ))}
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] leading-4 text-muted-foreground/80">
-              {BALANCE_KIND_OPTIONS.find((option) => option.value === resolvedKind)?.hint}
-            </p>
+              </div>
+            </div>
+            <div>
+              <div className="mb-1.5 px-0.5 text-[11px] font-medium text-muted-foreground">
+                自建站点 · 地址自定义
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {selfHostedPresets.map((item) => (
+                  <PresetRow
+                    key={item.id}
+                    icon={<PresetAvatar label={item.label} />}
+                    label={item.label}
+                    detail={item.domain}
+                    onClick={() => selectPreset(item.id)}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
-          {needsNewapiCredentials ? (
-            <>
+        ) : (
+          <div className="space-y-4 py-1">
+            {/* 预设条：图标 + 名称 + 域名，可「更换」回到选择列表（对齐 cc-switch PresetBar）。 */}
+            <div className="rounded-lg border border-border/70 bg-muted/50 px-3 py-2.5">
+              <div className="flex items-center gap-2.5">
+                <PresetAvatar label={preset?.label ?? "自定义供应商"} custom={!preset} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium">
+                    {preset?.label ?? "自定义供应商"}
+                  </div>
+                  <div className="truncate font-mono text-[11px] leading-4 text-muted-foreground">
+                    {preset ? lockedBaseUrl ?? "地址自定义" : "填写任意 Base URL"}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => setStep("pick")}
+                >
+                  更换
+                </Button>
+              </div>
+              {preset?.variants && preset.variants.length > 1 && (
+                <div
+                  role="group"
+                  aria-label="站点"
+                  className="mt-2.5 flex rounded-lg border border-border bg-card p-0.5"
+                >
+                  {preset.variants.map((variant) => (
+                    <button
+                      key={variant.id}
+                      type="button"
+                      aria-pressed={variant.id === variantId}
+                      onClick={() => switchVariant(variant.id)}
+                      className={cn(
+                        "h-7 flex-1 rounded-md text-xs transition-colors",
+                        variant.id === variantId
+                          ? "bg-primary/10 font-medium text-foreground"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {variant.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">名称</span>
+              <input
+                className={inputClass}
+                value={name}
+                maxLength={40}
+                placeholder="如 DeepSeek 主号"
+                onChange={(event) => {
+                  setName(event.target.value);
+                  setNameTouched(true);
+                }}
+              />
+            </label>
+
+            {lockedBaseUrl ? (
+              <div className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Base URL（固定供应商，已自动填充）
+                </span>
+                <div className="flex h-9 w-full items-center gap-2 rounded-lg border border-border/70 bg-muted/50 px-3 font-mono text-xs text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate">{lockedBaseUrl}</span>
+                  <Lock className="size-3.5 shrink-0" aria-label="地址由模板固定" />
+                </div>
+                <p className="text-[11px] leading-4 text-muted-foreground/80">{preset?.hint}</p>
+              </div>
+            ) : (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    Base URL
+                    {!preset && baseUrl && (
+                      <Badge variant={detected ? "default" : "outline"} className="text-[10px]">
+                        {detected ? `已识别 ${getBalanceKindLabel(detected)}` : "未识别，按所选模板查询"}
+                      </Badge>
+                    )}
+                  </span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={baseUrl}
+                    placeholder={
+                      preset?.id === "newapi"
+                        ? "https://你的中转站地址"
+                        : preset?.id === "sub2api"
+                          ? "https://你的站点地址（可带 /v1）"
+                          : "https://api.example.com"
+                    }
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                  />
+                </label>
+                {preset ? (
+                  <p className="text-[11px] leading-4 text-muted-foreground/80">{preset.hint}</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">查询模板</span>
+                    <Select value={templateKind} onValueChange={(value) => setTemplateKind(value ?? "auto")}>
+                      <SelectTrigger className="h-9 w-full border-border bg-card text-xs" aria-label="查询模板">
+                        <SelectValue>
+                          {BALANCE_KIND_OPTIONS.find((option) => option.value === templateKind)?.label
+                            ?? "自动检测"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BALANCE_KIND_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] leading-4 text-muted-foreground/80">
+                      {BALANCE_KIND_OPTIONS.find((option) => option.value === resolvedKind)?.hint}
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {needsNewapiCredentials ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Access Token{editing?.accessTokenMasked ? "（留空保持不变）" : "（必填）"}
+                  </span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={accessToken}
+                    placeholder={editing ? "留空表示保持不变" : "new-api 系统访问令牌"}
+                    onChange={(event) => setAccessToken(event.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">用户 ID</span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={userId}
+                    placeholder="请求头 New-Api-User 的值"
+                    onChange={(event) => setUserId(event.target.value)}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">API Key（可选）</span>
+                  <input
+                    className={cn(inputClass, "font-mono text-xs")}
+                    value={apiKey}
+                    placeholder={editing ? "留空表示保持不变" : "推理用 Key，仅作记录"}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : (
               <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground">Access Token（必填）</span>
-                <input
-                  className={cn(inputClass, "font-mono text-xs")}
-                  value={accessToken}
-                  placeholder={editing ? "留空表示保持不变" : "new-api 系统访问令牌"}
-                  onChange={(event) => setAccessToken(event.target.value)}
-                />
-              </label>
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground">用户 ID</span>
-                <input
-                  className={cn(inputClass, "font-mono text-xs")}
-                  value={userId}
-                  placeholder="请求头 New-Api-User 的值"
-                  onChange={(event) => setUserId(event.target.value)}
-                />
-              </label>
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground">API Key（可选）</span>
+                <span className="text-xs font-medium text-muted-foreground">
+                  API Key{editing?.apiKeyMasked ? "（留空保持不变）" : ""}
+                </span>
                 <input
                   className={cn(inputClass, "font-mono text-xs")}
                   value={apiKey}
-                  placeholder={editing ? "留空表示保持不变" : "推理用 Key，仅作记录"}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={editing?.apiKeyMasked ? "••••••（不修改）" : "sk-..."}
                   onChange={(event) => setApiKey(event.target.value)}
                 />
               </label>
-            </>
-          ) : (
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-muted-foreground">
-                API Key{editing ? "（留空保持不变）" : ""}
-              </span>
-              <input
-                className={cn(inputClass, "font-mono text-xs")}
-                value={apiKey}
-                type="password"
-                autoComplete="off"
-                placeholder={editing ? "••••••（不修改）" : "sk-..."}
-                onChange={(event) => setApiKey(event.target.value)}
-              />
-            </label>
-          )}
-          {error && (
-            <div className="flex items-start gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
-              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-        </div>
+            )}
+            {error && (
+              <div className="flex items-start gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+        )}
         <DialogFooter>
           <Button type="button" variant="outline" size="sm" onClick={onClose}>
             取消
           </Button>
-          <Button type="button" size="sm" disabled={submitting} onClick={() => void submit()}>
-            {submitting && <RefreshCw className="animate-spin" />}
-            {editing ? "保存" : "添加"}
-          </Button>
+          {step === "form" && (
+            <Button type="button" size="sm" disabled={submitting} onClick={() => void submit()}>
+              {submitting && <RefreshCw className="animate-spin" />}
+              {editing ? "保存" : "添加"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

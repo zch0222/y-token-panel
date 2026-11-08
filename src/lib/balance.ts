@@ -123,6 +123,184 @@ export function getBalanceKindLabel(kind: BalanceKind): string {
   return BALANCE_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
 }
 
+// ── 供应商预设（添加面板用，对齐 cc-switch 的 ProviderPreset 思路）─────────────
+
+/** 同一供应商的站点变体（如国内 / 国际站），切换变体时同步锁定的 Base URL。 */
+export interface BalancePresetVariant {
+  id: string;
+  label: string;
+  baseUrl: string;
+}
+
+/**
+ * 供应商预设：固定厂商（DeepSeek 等）的地址自动填充且不可编辑；
+ * new-api / Sub2API 这类自建站点地址由用户填写。
+ */
+export interface BalanceProviderPreset {
+  id: string;
+  kind: BalanceKind;
+  label: string;
+  /** 选择列表与预设条里的副标题（域名或说明）。 */
+  domain: string;
+  /** 固定厂商的锁定地址；null = 地址由用户填写。 */
+  baseUrl: string | null;
+  /** 站点变体；有变体时锁定地址以所选变体为准。 */
+  variants?: BalancePresetVariant[];
+  /** 该供应商的凭据表单需求。 */
+  fields: {
+    /** new-api 的推理 Key 仅作记录，可选。 */
+    apiKey: "required" | "optional";
+    /** new-api 需要用户系统 Access Token 而非 API Key。 */
+    accessToken: boolean;
+    /** new-api 请求头 New-Api-User。 */
+    userId: boolean;
+  };
+  hint: string;
+}
+
+/** 添加面板的预设列表：固定厂商在前，自建站点在后。 */
+export const BALANCE_PROVIDER_PRESETS: BalanceProviderPreset[] = [
+  {
+    id: "deepseek",
+    kind: "deepseek",
+    label: "DeepSeek",
+    domain: "api.deepseek.com",
+    baseUrl: "https://api.deepseek.com",
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /user/balance，多币种钱包",
+  },
+  {
+    id: "siliconflow",
+    kind: "siliconflow",
+    label: "SiliconFlow",
+    domain: "siliconflow.cn / .com",
+    baseUrl: null,
+    variants: [
+      { id: "siliconflow-cn", label: "国内站（CNY）", baseUrl: "https://api.siliconflow.cn" },
+      { id: "siliconflow-com", label: "国际站（USD）", baseUrl: "https://api.siliconflow.com" },
+    ],
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /v1/user/info，按站点显示 CNY / USD",
+  },
+  {
+    id: "zhipu",
+    kind: "zhipu",
+    label: "智谱 / Z.ai",
+    domain: "bigmodel.cn / z.ai",
+    baseUrl: null,
+    variants: [
+      { id: "zhipu-cn", label: "国内站（CNY）", baseUrl: "https://open.bigmodel.cn" },
+      { id: "zhipu-com", label: "国际站（USD）", baseUrl: "https://api.z.ai" },
+    ],
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "账户余额报表接口，Key 不带 Bearer",
+  },
+  {
+    id: "openrouter",
+    kind: "openrouter",
+    label: "OpenRouter",
+    domain: "openrouter.ai",
+    baseUrl: "https://openrouter.ai",
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /api/v1/credits，剩余 = 总额度 - 已用",
+  },
+  {
+    id: "novita",
+    kind: "novita",
+    label: "Novita AI",
+    domain: "api.novita.ai",
+    baseUrl: "https://api.novita.ai",
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /v3/user/balance",
+  },
+  {
+    id: "stepfun",
+    kind: "stepfun",
+    label: "StepFun",
+    domain: "api.stepfun.com",
+    baseUrl: "https://api.stepfun.com",
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /v1/accounts",
+  },
+  {
+    id: "newapi",
+    kind: "newapi",
+    label: "new-api 中转站",
+    domain: "自建站点，地址自定义",
+    baseUrl: null,
+    fields: { apiKey: "optional", accessToken: true, userId: true },
+    hint: "GET /api/user/self，需要 Access Token 与用户 ID",
+  },
+  {
+    id: "sub2api",
+    kind: "sub2api",
+    label: "Sub2API",
+    domain: "自建站点，地址自定义",
+    baseUrl: null,
+    fields: { apiKey: "required", accessToken: false, userId: false },
+    hint: "GET /v1/usage，API Key 认证",
+  },
+];
+
+export function getBalancePreset(presetId: string): BalanceProviderPreset | undefined {
+  return BALANCE_PROVIDER_PRESETS.find((preset) => preset.id === presetId);
+}
+
+/** 预设当前生效的锁定地址（无变体即自身；可编辑预设返回 null）。 */
+export function resolvePresetBaseUrl(
+  preset: BalanceProviderPreset,
+  variantId: string,
+): string | null {
+  if (preset.variants) {
+    return preset.variants.find((variant) => variant.id === variantId)?.baseUrl
+      ?? preset.variants[0]?.baseUrl
+      ?? null;
+  }
+  return preset.baseUrl;
+}
+
+/** 是否为固定厂商预设（地址自动填充并锁定）。 */
+export function isFixedBalancePreset(preset: BalanceProviderPreset): boolean {
+  return resolvePresetBaseUrl(preset, "") !== null;
+}
+
+function urlHost(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+/**
+ * 编辑回填：按已存 kind + Base URL 反查预设与站点变体。
+ * 通用模板或未知 kind 返回 null（表单落在「自定义」）。
+ */
+export function matchBalancePreset(
+  kind: BalanceKind,
+  baseUrl: string,
+): { presetId: string; variantId: string } | null {
+  const preset = BALANCE_PROVIDER_PRESETS.find((item) => item.kind === kind);
+  if (!preset) return null;
+  if (!preset.variants) {
+    return { presetId: preset.id, variantId: preset.id };
+  }
+  // 有站点变体的（SiliconFlow / 智谱）：按地址里的域名匹配，匹配不到取第一个。
+  const variant =
+    preset.variants.find((item) => baseUrl.toLowerCase().includes(urlHost(item.baseUrl)))
+    ?? preset.variants[0];
+  return { presetId: preset.id, variantId: variant.id };
+}
+
+/** 地址是否为某个预设（或其站点变体）自动填充的锁定值。 */
+export function isPresetLockedBaseUrl(baseUrl: string): boolean {
+  return BALANCE_PROVIDER_PRESETS.some(
+    (preset) =>
+      (preset.baseUrl !== null && preset.baseUrl === baseUrl)
+      || preset.variants?.some((variant) => variant.baseUrl === baseUrl) === true,
+  );
+}
+
 /** 脱敏：保留前 6 后 4，中间以 ··· 代替；过短的 Key 只保留首尾各 2 位。 */
 export function maskApiKey(key: string): string {
   const trimmed = key.trim();
