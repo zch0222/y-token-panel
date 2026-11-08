@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CalendarDays,
   ChartColumn,
@@ -36,6 +36,7 @@ import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
+import { UsageRefreshController } from "@/lib/usage-refresh-controller";
 import {
   BILLING_OPTIONS,
   buildTrend,
@@ -190,11 +191,16 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
   balance: { title: "余额查询", subtitle: "查询供应商账户余额与额度，内置限流保护" },
 };
 
+async function fetchUsageSnapshot(): Promise<UsageResponse> {
+  const response = await fetch("/api/usage", { cache: "no-store" });
+  if (!response.ok) throw new Error("读取用量数据失败");
+  return (await response.json()) as UsageResponse;
+}
+
 export function UsageDashboard() {
-  const [data, setData] = useState<UsageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [usageController] = useState(() => new UsageRefreshController(fetchUsageSnapshot));
+  const [usageState, setUsageState] = useState(usageController.getState);
+  const { data, loading, refreshing, syncing, error } = usageState;
   const [range, setRange] = useState<RangeKey>("today");
   const [harness, setHarness] = useState<HarnessFilter>("all");
   const [project, setProject] = useState("all");
@@ -210,37 +216,22 @@ export function UsageDashboard() {
   const [autoRefresh, setAutoRefresh] = useState(60_000);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
-  const loadUsage = useCallback(async () => {
-    try {
-      const response = await fetch("/api/usage", { cache: "no-store" });
-      if (!response.ok) throw new Error("读取用量数据失败");
-      const payload = (await response.json()) as UsageResponse;
-      setData(payload);
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "读取用量数据失败");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
-
   const refreshUsage = () => {
-    setRefreshing(true);
-    setError(null);
-    void loadUsage();
+    void usageController.refresh();
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadUsage(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadUsage]);
+    const unsubscribe = usageController.subscribe(setUsageState);
+    void usageController.start();
+    return () => {
+      usageController.stop();
+      unsubscribe();
+    };
+  }, [usageController]);
 
   useEffect(() => {
-    if (autoRefresh === 0) return;
-    const timer = window.setInterval(() => void loadUsage(), autoRefresh);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh, loadUsage]);
+    usageController.setAutoRefresh(autoRefresh);
+  }, [autoRefresh, usageController]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -329,10 +320,11 @@ export function UsageDashboard() {
     if (next === "overview") setTab("models");
   };
   const syncLabel = useMemo(() => {
-    if (refreshing) return "正在同步";
+    if (syncing) return "正在同步";
+    if (refreshing) return "后台刷新中";
     if (!data) return "同步数据";
     return "刚刚同步";
-  }, [data, refreshing]);
+  }, [data, refreshing, syncing]);
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -363,11 +355,11 @@ export function UsageDashboard() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={refreshing}
+              disabled={syncing}
               onClick={refreshUsage}
               className="h-8 bg-card px-3 text-xs text-muted-foreground hover:text-foreground"
             >
-              <RefreshCw className={cn(refreshing && "animate-spin")} />
+              <RefreshCw className={cn((refreshing || syncing) && "animate-spin")} />
               <span className="hidden sm:inline">{syncLabel}</span>
             </Button>
             <Button

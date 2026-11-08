@@ -1,38 +1,10 @@
 import { connection, NextResponse } from "next/server";
-import { readClaudeUsage } from "@/lib/claude";
-import { readCodeBuddyUsage } from "@/lib/codebuddy";
-import { readCodexUsage } from "@/lib/codex";
-import { readDshUsage } from "@/lib/dsh";
-import { readKcodeUsage } from "@/lib/kcode";
-import { readQoderUsage } from "@/lib/qoder";
-import { readWorkBuddyUsage } from "@/lib/workbuddy";
-import { readZcodeUsage } from "@/lib/zcode";
-import type { UsageResponse } from "@/lib/usage";
+import { scanUsage } from "@/lib/usage-scanner";
 
 export async function GET() {
   await connection();
   try {
-    const results = await Promise.all([
-      readCodeBuddyUsage(),
-      readWorkBuddyUsage(),
-      readQoderUsage(),
-      readZcodeUsage(),
-      readKcodeUsage(),
-      readClaudeUsage(),
-      readCodexUsage(),
-      readDshUsage(),
-    ]);
-    const usage: UsageResponse = {
-      records: results.flatMap((result) => result.records),
-      sources: results.map(({ records, ...source }) => ({
-        ...source,
-        recordCount: records.length,
-      })),
-      scannedFiles: results.reduce((sum, result) => sum + result.scannedFiles, 0),
-      skippedFiles: results.reduce((sum, result) => sum + result.skippedFiles, 0),
-      syncedAt: Date.now(),
-    };
-    usage.records.sort((a, b) => b.timestamp - a.timestamp);
+    const usage = await scanUsage();
     return NextResponse.json(usage, {
       headers: { "Cache-Control": "no-store" },
     });
