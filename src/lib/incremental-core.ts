@@ -23,6 +23,35 @@ export interface IncrementalFileBase {
   mtimeMs: number;
 }
 
+/**
+ * 大文件读取/解析的每来源并发上限（M5）。冷导入按此并发读文件，避免把全部
+ * 历史正文一次性同时读入内存；记录组装仍按文件序串行，first-wins 语义不变。
+ */
+export const FILE_IO_CONCURRENCY = 8;
+
+/** 顺序保持的有界并发 map：结果顺序与输入一致，单个 worker 抛错整体拒绝。 */
+export async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= items.length) return;
+        results[index] = await fn(items[index]!, index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 export interface IncrementalStats {
   /** 新增正文（追加区间或整读文件本体）读取的字节数。 */
   bodyBytesRead: number;
@@ -30,6 +59,8 @@ export interface IncrementalStats {
   verificationBytesRead: number;
   /** 回看窗口字节数（仅带链上下文的来源如 Claude；含在 verification 内）。 */
   lookbackBytesRead?: number;
+  /** 依赖缓存未命中时为解析父/前序文件读取的份数（Codex）。 */
+  dependencyFilesRead?: number;
   fullFilesRead: number;
   incrementalFilesRead: number;
   unchangedFiles: number;
@@ -47,6 +78,7 @@ export function emptyIncrementalStats(): IncrementalStats {
     bodyBytesRead: 0,
     verificationBytesRead: 0,
     lookbackBytesRead: 0,
+    dependencyFilesRead: 0,
     fullFilesRead: 0,
     incrementalFilesRead: 0,
     unchangedFiles: 0,

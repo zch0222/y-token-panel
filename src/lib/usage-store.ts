@@ -500,6 +500,38 @@ export class UsageStore {
     }));
   }
 
+  /** 上次成功提交的各来源摘要；单来源同步失败时用于保留其最后成功数据（M5）。 */
+  getSourceRows(): Map<HarnessId, {
+    recordCount: number;
+    scannedFiles: number;
+    skippedFiles: number;
+    source: string;
+    sourceAvailable: boolean;
+  }> {
+    const rows = this.db
+      .prepare("SELECT * FROM usage_sources")
+      .all() as unknown as Array<{
+      harness: HarnessId;
+      record_count: number;
+      scanned_files: number;
+      skipped_files: number;
+      source: string;
+      source_available: number;
+    }>;
+    return new Map(
+      rows.map((row) => [
+        row.harness,
+        {
+          recordCount: row.record_count,
+          scannedFiles: row.scanned_files,
+          skippedFiles: row.skipped_files,
+          source: row.source,
+          sourceAvailable: row.source_available === 1,
+        },
+      ]),
+    );
+  }
+
   getDedupKeys(harness: HarnessId): string[] {
     return (
       this.db

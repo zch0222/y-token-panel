@@ -3,6 +3,7 @@ import { readClaudeUsage } from "@/lib/claude";
 import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
+import { readCodexUsageIncremental } from "@/lib/codex-incremental";
 import { readDshUsage } from "@/lib/dsh";
 import { readDshUsageIncremental } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
@@ -15,7 +16,7 @@ import {
   readWorkBuddyUsageIncremental,
 } from "@/lib/wholefile-incremental";
 import { readZcodeUsage } from "@/lib/zcode";
-import type { HarnessUsage, UsageResponse } from "@/lib/usage";
+import type { HarnessId, HarnessUsage, UsageResponse } from "@/lib/usage";
 import type {
   UsageIncrementalCommit,
   UsageStore,
@@ -118,56 +119,105 @@ export function createUsageScanner(
   };
 }
 
-const usageReaders: UsageReader[] = [
-  readCodeBuddyUsage,
-  readWorkBuddyUsage,
-  readQoderUsage,
-  readZcodeUsage,
-  readKcodeUsage,
-  readClaudeUsage,
-  readCodexUsage,
-  readDshUsage,
+const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
+  { harness: "codebuddy", read: readCodeBuddyUsage },
+  { harness: "workbuddy", read: readWorkBuddyUsage },
+  { harness: "qoder", read: readQoderUsage },
+  { harness: "zcode", read: readZcodeUsage },
+  { harness: "kcode", read: readKcodeUsage },
+  { harness: "claude", read: readClaudeUsage },
+  { harness: "codex", read: readCodexUsage },
+  { harness: "dsh", read: readDshUsage },
 ];
 
 /** worker 专用：全量 reader 之外的持久游标增量路径（与全量 reader 同一解析体）。 */
 const incrementalReaders: Array<{
+  harness: HarnessId;
   read: UsageReader;
   incremental: (store: UsageStore) => Promise<IncrementalUsageResult>;
 }> = [
-  { read: readCodeBuddyUsage, incremental: readCodeBuddyUsageIncremental },
-  { read: readWorkBuddyUsage, incremental: readWorkBuddyUsageIncremental },
-  { read: readQoderUsage, incremental: readQoderUsageIncremental },
-  { read: readKcodeUsage, incremental: readKcodeUsageIncremental },
-  { read: readClaudeUsage, incremental: readClaudeUsageIncremental },
-  { read: readDshUsage, incremental: readDshUsageIncremental },
+  { harness: "codebuddy", read: readCodeBuddyUsage, incremental: readCodeBuddyUsageIncremental },
+  { harness: "workbuddy", read: readWorkBuddyUsage, incremental: readWorkBuddyUsageIncremental },
+  { harness: "qoder", read: readQoderUsage, incremental: readQoderUsageIncremental },
+  { harness: "kcode", read: readKcodeUsage, incremental: readKcodeUsageIncremental },
+  { harness: "claude", read: readClaudeUsage, incremental: readClaudeUsageIncremental },
+  { harness: "codex", read: readCodexUsage, incremental: readCodexUsageIncremental },
+  { harness: "dsh", read: readDshUsage, incremental: readDshUsageIncremental },
 ];
 
-const usageScanner = createUsageScanner(usageReaders);
+const usageScanner = createUsageScanner(usageReaders.map(({ read }) => read));
 
 export function scanUsage(): Promise<UsageResponse> {
   return usageScanner.scan();
+}
+
+/**
+ * 单个来源失败时保留该来源的最后成功数据（M5 错误隔离）：失败来源的记录与
+ * 来源摘要沿用上次成功提交的归一化库，其余来源照常更新；失败来源的增量游标
+ * 因事务缺失而保持不动，下一轮自动重试。全部来源都失败时整体失败，由调用
+ * 方保留旧快照。
+ */
+function staleUsageForFailedSource(
+  store: UsageStore,
+  harness: HarnessId,
+): HarnessUsage | undefined {
+  const row = store.getSourceRows().get(harness);
+  if (!row) return undefined;
+  return {
+    harness,
+    records: store.readNormalizedRecords(harness),
+    scannedFiles: row.scannedFiles,
+    skippedFiles: row.skippedFiles,
+    source: row.source,
+    sourceAvailable: row.sourceAvailable,
+  };
 }
 
 export async function scanUsageForStorage(store: UsageStore): Promise<{
   usage: UsageResponse;
   incrementals: UsageIncrementalCommit[];
 }> {
-  const incrementalByRead = new Map(
-    incrementalReaders.map(({ read, incremental }) => [read, incremental]),
+  const incrementalByHarness = new Map(
+    incrementalReaders.map(({ harness, incremental }) => [harness, incremental]),
   );
   const transactions: UsageIncrementalCommit[] = [];
-  const readers = usageReaders.map((read) => {
-    const incremental = incrementalByRead.get(read);
+  const expectedTransactions = new Set<HarnessId>();
+  const readers = usageReaders.map(({ harness, read }) => {
+    const incremental = incrementalByHarness.get(harness);
     if (!incremental) return read;
+    expectedTransactions.add(harness);
     return async () => {
       const result = await incremental(store);
       transactions.push(result.transaction);
       return result.usage;
     };
   });
-  const usage = combineUsageResults(await Promise.all(readers.map((read) => read())));
-  if (transactions.length !== incrementalReaders.length) {
-    throw new Error("增量 reader 未全部返回事务状态");
+
+  const settled = await Promise.allSettled(readers.map((read) => read()));
+  const results: HarnessUsage[] = [];
+  let succeededIncrementals = 0;
+  let firstError: unknown;
+  for (const [index, outcome] of settled.entries()) {
+    const { harness } = usageReaders[index]!;
+    if (outcome.status === "fulfilled") {
+      results.push(outcome.value);
+      if (expectedTransactions.has(harness)) succeededIncrementals += 1;
+      continue;
+    }
+    firstError ??= outcome.reason;
+    // 失败来源回退到最后成功数据；从未成功过的来源按不可用略过。
+    const stale = staleUsageForFailedSource(store, harness);
+    if (stale) results.push(stale);
+    console.error(
+      `[usage] 来源 ${harness} 本轮同步失败，已保留最后成功数据`,
+      outcome.reason,
+    );
   }
-  return { usage, incrementals: transactions };
+  if (results.length === 0) {
+    throw firstError instanceof Error ? firstError : new Error(String(firstError));
+  }
+  if (transactions.length !== succeededIncrementals) {
+    throw new Error("增量 reader 事务与成功来源数不一致");
+  }
+  return { usage: combineUsageResults(results), incrementals: transactions };
 }

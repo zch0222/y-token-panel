@@ -4,8 +4,10 @@ import path from "node:path";
 import {
   canonicalRecord,
   emptyIncrementalStats,
+  FILE_IO_CONCURRENCY,
   fingerprintAt,
   lastCompleteLineEnd,
+  mapBounded,
   readRange,
   sessionLogState,
   sortUsageRecords,
@@ -102,27 +104,21 @@ function result<F extends IncrementalFileBase>(
   return { usage, transaction, stats };
 }
 
-async function importWholeFile<F extends IncrementalFileBase>(
+/** 读取并解析单个文件；读取或解析失败返回 null（由调用方按 skipped 处理）。 */
+async function loadWholeFile<F extends IncrementalFileBase>(
   config: WholeFileHarnessConfig<F>,
   file: F,
-  seen: Set<string>,
   stats: IncrementalStats,
 ): Promise<{ records: UsageRecord[]; cursor: UsageSessionLogState }> {
   const buffer = await readFile(file.filePath);
   stats.bodyBytesRead += buffer.length;
   stats.fullFilesRead += 1;
   const parsed = config.parseFile(file, buffer.toString("utf8"));
-  const records: UsageRecord[] = [];
-  for (const record of parsed) {
-    if (seen.has(record.id)) continue;
-    seen.add(record.id);
-    records.push(canonicalRecord(record));
-  }
   // 游标语义与字节游标来源一致：只认到最后一个完整 LF 行；变化文件下一轮
   // 整文件重读，尾部半行会被 parser 正常解析（与全量 reader 口径一致）。
   const cursorOffset = lastCompleteLineEnd(buffer);
   return {
-    records,
+    records: parsed,
     cursor: sessionLogState(
       config.harness,
       file,
@@ -138,18 +134,30 @@ async function fullImport<F extends IncrementalFileBase>(
   discovery: WholeFileDiscovery<F>,
   stats: IncrementalStats,
 ): Promise<IncrementalUsageResult> {
+  // 冷导入按 FILE_IO_CONCURRENCY 有界并发读取/解析（M5）；去重与游标推进
+  // 仍按文件序串行，first-wins 与全量 reader 口径不变。
+  const loaded = await mapBounded(discovery.files, FILE_IO_CONCURRENCY, async (file) => {
+    try {
+      return await loadWholeFile(config, file, stats);
+    } catch {
+      return null;
+    }
+  });
   const records: UsageRecord[] = [];
   const cursors: UsageSessionLogState[] = [];
   const seen = new Set<string>();
   let skippedFiles = 0;
-  for (const file of discovery.files) {
-    try {
-      const imported = await importWholeFile(config, file, seen, stats);
-      records.push(...imported.records);
-      cursors.push(imported.cursor);
-    } catch {
+  for (const item of loaded) {
+    if (item === null) {
       skippedFiles += 1;
+      continue;
     }
+    for (const record of item.records) {
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      records.push(canonicalRecord(record));
+    }
+    cursors.push(item.cursor);
   }
   for (const aux of discovery.auxiliaries) {
     if (aux.size === null) continue;
