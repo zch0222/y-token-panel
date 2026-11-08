@@ -1,8 +1,9 @@
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readAntigravityUsage } from "@/lib/antigravity";
+import { ANTIGRAVITY_PARSER_MARKER, readAntigravityUsage } from "@/lib/antigravity";
 import { readAntigravityUsageIncremental } from "@/lib/antigravity-incremental";
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
 import type { UsageResponse } from "@/lib/usage";
@@ -74,7 +75,9 @@ describe("Antigravity 增量导入", () => {
     const imported = await sync();
     expect(imported.usage).toEqual(baseline);
     expect(imported.stats.rebuilds).toBe(1);
-    expect(store.getSessionLogStates("antigravity")).toHaveLength(1);
+    expect(
+      store.getSessionLogStates("antigravity").map((state) => state.filePath).sort(),
+    ).toEqual([filePath, ANTIGRAVITY_PARSER_MARKER].sort());
 
     const unchanged = await sync();
     expect(unchanged.stats).toMatchObject({
@@ -104,6 +107,30 @@ describe("Antigravity 增量导入", () => {
     expect(rebuilt.stats.rebuilds).toBe(1);
     expect(rebuilt.usage.records).toHaveLength(1);
     expect(rebuilt.usage.records[0]?.outputTokens).toBe(77);
+    expect(store.readNormalizedRecords("antigravity")).toHaveLength(1);
+  });
+
+  it("解析版本变化时来源级重建，旧游标不会跳过已入库记录", async () => {
+    store.close();
+    const databasePath = path.join(root, "usage.sqlite");
+    store = new UsageStore(databasePath);
+
+    const logs = conversationDir("conv-a");
+    await mkdir(logs, { recursive: true });
+    await writeFile(path.join(logs, "transcript.jsonl"), transcriptLine(1) + "\n");
+    expect((await sync()).stats.rebuilds).toBe(1);
+    expect((await sync()).stats.rebuilds).toBe(0);
+
+    // 模拟旧版本写入的游标：版本标记与当前解析版本不一致。
+    const raw = new DatabaseSync(databasePath);
+    raw.exec(
+      "UPDATE session_log_sync SET tail_fingerprint = 'antigravity-parser-v1' " +
+        "WHERE harness = 'antigravity' AND file_path = 'antigravity:parser-version'",
+    );
+    raw.close();
+
+    const rebuilt = await sync();
+    expect(rebuilt.stats.rebuilds).toBe(1);
     expect(store.readNormalizedRecords("antigravity")).toHaveLength(1);
   });
 

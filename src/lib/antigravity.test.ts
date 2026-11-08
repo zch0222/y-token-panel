@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import {
+  ANTIGRAVITY_PARSER_MARKER,
+  ANTIGRAVITY_PARSER_VERSION,
   antigravityRoots,
   discoverAntigravityTranscripts,
   readAntigravityUsage,
@@ -111,6 +113,14 @@ describe("Antigravity 路径与数据源", () => {
       "transcript_full.jsonl",
     ]);
     expect(discovery.files.every((file) => file.project === "未知项目")).toBe(true);
+    expect(discovery.auxiliaries).toEqual([
+      {
+        filePath: ANTIGRAVITY_PARSER_MARKER,
+        size: ANTIGRAVITY_PARSER_VERSION,
+        mtimeMs: 0,
+        fingerprint: `antigravity-parser-v${ANTIGRAVITY_PARSER_VERSION}`,
+      },
+    ]);
   });
 
   it("从 conversation_summaries 读取项目归属；库缺失时退回未知项目", async () => {

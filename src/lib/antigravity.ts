@@ -9,6 +9,7 @@ import {
 import { readGenerationTimings } from "@/lib/antigravity-timing";
 import type { IncrementalFileBase } from "@/lib/incremental-core";
 import type { HarnessUsage, UsageRecord } from "@/lib/usage";
+import type { WholeFileAuxiliary } from "@/lib/wholefile-incremental";
 
 /**
  * Antigravity 数据源：默认读取本机 Antigravity IDE 的
@@ -22,6 +23,14 @@ import type { HarnessUsage, UsageRecord } from "@/lib/usage";
  */
 
 export const UNKNOWN_ANTIGRAVITY_PROJECT = "未知项目";
+
+/**
+ * 解析口径版本。记录内容语义变化（例如新增原生耗时）时递增：整读型增量只重读
+ * 变化文件，旧记录不会自动重算；这里把版本当成稳定的“伴随文件”参与游标校验，
+ * 版本不一致就触发一次来源级重建，让已入库记录按新口径重新解析。
+ */
+export const ANTIGRAVITY_PARSER_VERSION = 2;
+export const ANTIGRAVITY_PARSER_MARKER = "antigravity:parser-version";
 
 const TRANSCRIPT_NAMES = ["transcript.jsonl", "transcript_full.jsonl"] as const;
 
@@ -55,8 +64,8 @@ export interface AntigravityDiscovery {
   files: AntigravityTranscriptFile[];
   scannedFiles: number;
   skippedFiles: number;
-  /** 项目归属只在 discovery 时读取，不作为触发重建的伴随文件。 */
-  auxiliaries: [];
+  /** 项目归属只在 discovery 时读取，不作为触发重建的伴随文件；这里只放解析版本标记。 */
+  auxiliaries: WholeFileAuxiliary[];
 }
 
 /**
@@ -184,7 +193,14 @@ export async function discoverAntigravityTranscripts(
     files,
     scannedFiles,
     skippedFiles,
-    auxiliaries: [],
+    auxiliaries: [
+      {
+        filePath: ANTIGRAVITY_PARSER_MARKER,
+        size: ANTIGRAVITY_PARSER_VERSION,
+        mtimeMs: 0,
+        fingerprint: `antigravity-parser-v${ANTIGRAVITY_PARSER_VERSION}`,
+      },
+    ],
   };
 }
 
