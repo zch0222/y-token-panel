@@ -36,14 +36,13 @@ import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
-import { UsageRefreshController } from "@/lib/usage-refresh-controller";
+import { UsageDashboardController } from "@/lib/usage-dashboard-controller";
 import {
   BILLING_OPTIONS,
-  buildTrend,
-  filterUsageRecords,
   formatCompact,
   formatCredits,
   formatPercent,
+  formatTime,
   getHarnessLabel,
   HARNESS_OPTIONS,
   RANGE_OPTIONS,
@@ -53,8 +52,11 @@ import {
   type HarnessFilter,
   type MetricKey,
   type RangeKey,
-  type UsageResponse,
+  type UsageQueryFilters,
+  type UsageRecordsPage,
   type UsageSummary,
+  type UsageSyncResult,
+  type UsageView,
 } from "@/lib/usage";
 
 interface MetricCardProps {
@@ -191,13 +193,40 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
   balance: { title: "余额查询", subtitle: "查询供应商账户余额与额度，内置限流保护" },
 };
 
-async function fetchUsageSnapshot(): Promise<UsageResponse> {
-  const response = await fetch("/api/usage", { cache: "no-store" });
-  if (!response.ok) throw new Error("读取用量快照失败");
-  return (await response.json()) as UsageResponse;
+function usageQuerySearch(filters: UsageQueryFilters, extra: Record<string, string> = {}): string {
+  return new URLSearchParams({
+    range: filters.range,
+    harness: filters.harness,
+    project: filters.project,
+    provider: filters.provider,
+    model: filters.model,
+    billing: filters.billing,
+    ...extra,
+  }).toString();
 }
 
-async function syncUsageSnapshot(): Promise<UsageResponse> {
+async function fetchUsageView(filters: UsageQueryFilters): Promise<UsageView> {
+  const response = await fetch(`/api/usage/query?${usageQuerySearch(filters)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error("读取用量统计失败");
+  return (await response.json()) as UsageView;
+}
+
+async function fetchUsageRecordsPage(
+  filters: UsageQueryFilters,
+  page: number,
+  pageSize: number,
+): Promise<UsageRecordsPage> {
+  const response = await fetch(
+    `/api/usage/records?${usageQuerySearch(filters, { page: String(page), pageSize: String(pageSize) })}`,
+    { cache: "no-store" },
+  );
+  if (!response.ok) throw new Error("读取请求日志失败");
+  return (await response.json()) as UsageRecordsPage;
+}
+
+async function syncUsageResult(): Promise<UsageSyncResult> {
   const response = await fetch("/api/usage/sync", {
     method: "POST",
     cache: "no-store",
@@ -208,18 +237,22 @@ async function syncUsageSnapshot(): Promise<UsageResponse> {
       | null;
     throw new Error(payload?.detail ?? payload?.error ?? "同步用量数据失败");
   }
-  return (await response.json()) as UsageResponse;
+  return (await response.json()) as UsageSyncResult;
 }
 
 export function UsageDashboard() {
-  const [usageController] = useState(
+  const [controller] = useState(
     () =>
-      new UsageRefreshController(syncUsageSnapshot, undefined, {
-        querySnapshot: fetchUsageSnapshot,
+      new UsageDashboardController({
+        fetchView: fetchUsageView,
+        fetchRecords: fetchUsageRecordsPage,
+        syncUsage: syncUsageResult,
       }),
   );
-  const [usageState, setUsageState] = useState(usageController.getState);
-  const { data, loading, refreshing, syncing, error } = usageState;
+  const [dashboardState, setDashboardState] = useState(controller.getState);
+  const { view: viewSection, records: recordsSection, syncing, refreshing, lastSyncedAt, syncError } =
+    dashboardState;
+  const view = viewSection.data;
   const [range, setRange] = useState<RangeKey>("today");
   const [harness, setHarness] = useState<HarnessFilter>("all");
   const [project, setProject] = useState("all");
@@ -229,83 +262,60 @@ export function UsageDashboard() {
   const [metric, setMetric] = useState<MetricKey>("tokens");
   const [chartType, setChartType] = useState<ChartType>("bar");
   const [tab, setTab] = useState<DetailTab>("models");
-  const [view, setView] = useState<DashboardView>("overview");
+  const [viewName, setView] = useState<DashboardView>("overview");
   const [collapsed, setCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(60_000);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
   const refreshUsage = () => {
-    void usageController.refresh();
+    void controller.refresh();
   };
 
   useEffect(() => {
-    const unsubscribe = usageController.subscribe(setUsageState);
-    void usageController.start();
+    const unsubscribe = controller.subscribe(setDashboardState);
+    controller.start();
     return () => {
-      usageController.stop();
+      controller.stop();
       unsubscribe();
     };
-  }, [usageController]);
+  }, [controller]);
 
   useEffect(() => {
-    usageController.setAutoRefresh(autoRefresh);
-  }, [autoRefresh, usageController]);
+    controller.setAutoRefresh(autoRefresh);
+  }, [autoRefresh, controller]);
+
+  // 筛选变化交给控制器统一查询；切换时保留上一份数据（updating 状态）。
+  const filters = useMemo<UsageQueryFilters>(
+    () => ({ range, harness, project, provider, model, billing }),
+    [range, harness, project, provider, model, billing],
+  );
+  useEffect(() => {
+    controller.setFilters(filters);
+  }, [controller, filters]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
 
-  const records = useMemo(() => data?.records ?? [], [data]);
-  const referenceTime = useMemo(() => new Date(data?.syncedAt ?? 0), [data]);
-  const harnessRecords = useMemo(
-    () => records.filter((record) => harness === "all" || record.harness === harness),
-    [records, harness],
-  );
-  const filteredRecords = useMemo(
-    () =>
-      filterUsageRecords(records, range, project, provider, model, referenceTime, harness, billing),
-    [records, range, project, provider, model, referenceTime, harness, billing],
-  );
-  const summary = useMemo(() => summarizeRecords(filteredRecords), [filteredRecords]);
-  const today = useMemo(
-    () =>
-      summarizeRecords(
-        filterUsageRecords(records, "today", "all", "all", "all", referenceTime, harness),
-      ),
-    [records, referenceTime, harness],
-  );
-  const trend = useMemo(
-    () => buildTrend(filteredRecords, range, referenceTime),
-    [filteredRecords, range, referenceTime],
-  );
-  const chartNotice = getChartNotice(metric, summary, harness);
+  const loading = viewSection.loading;
+  const emptySummary = useMemo(() => summarizeRecords([]), []);
+  const summary = view?.summary ?? emptySummary;
+  const today = view?.todaySummary ?? emptySummary;
+  const trend = view?.trend ?? [];
+  const chartNotice = view === null ? null : getChartNotice(metric, summary, harness);
   const activeSources = useMemo(
     () =>
-      data?.sources.filter((source) => harness === "all" || source.harness === harness) ?? [],
-    [data, harness],
+      view?.sources.filter((source) => harness === "all" || source.harness === harness) ?? [],
+    [view, harness],
   );
-
-  const projects = useMemo(
-    () => Array.from(new Set(harnessRecords.map((record) => record.project))).sort(),
-    [harnessRecords],
-  );
-  const providers = useMemo(
-    () => Array.from(new Set(harnessRecords.map((record) => record.provider))).sort(),
-    [harnessRecords],
-  );
-  const models = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          harnessRecords
-            .filter((record) => provider === "all" || record.provider === provider)
-            .map((record) => record.model),
-        ),
-      ).sort(),
-    [harnessRecords, provider],
-  );
+  const projects = view?.facets.projects ?? [];
+  const providers = view?.facets.providers ?? [];
+  const models = view?.facets.models ?? [];
+  const filteredCount = view?.filteredCount ?? 0;
+  const updating = viewSection.updating || recordsSection.updating;
+  const hasData = view !== null;
 
   const changeHarness = (next: HarnessFilter) => {
     setHarness(next);
@@ -340,21 +350,30 @@ export function UsageDashboard() {
   };
   const syncLabel = useMemo(() => {
     if (syncing) return "正在同步";
-    if (loading && !data) return "首次导入中";
+    if (!view && loading) return "首次导入中";
     if (refreshing) return "后台刷新中";
-    if (!data) return "同步数据";
+    if (!view) return "同步数据";
     return "刚刚同步";
-  }, [data, loading, refreshing, syncing]);
+  }, [view, loading, refreshing, syncing]);
+
+  const exportCsv = () => {
+    const link = document.createElement("a");
+    link.href = `/api/usage/export?${usageQuerySearch(filters)}`;
+    link.rel = "noopener";
+    document.documentElement.appendChild(link);
+    link.click();
+    link.remove();
+  };
 
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar
-        view={view}
+        view={viewName}
         onViewChange={changeView}
         collapsed={collapsed}
         onCollapsedChange={setCollapsed}
         today={today}
-        connected={Boolean(activeSources.some((source) => source.sourceAvailable) && !error)}
+        connected={Boolean(activeSources.some((source) => source.sourceAvailable) && !syncError)}
       />
 
       <main className="min-w-0 flex-1">
@@ -364,9 +383,9 @@ export function UsageDashboard() {
               <ChartColumn className="size-5" />
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-[17px] font-semibold tracking-tight">{viewTitles[view].title}</h1>
+              <h1 className="truncate text-[17px] font-semibold tracking-tight">{viewTitles[viewName].title}</h1>
               <p className="mt-1 hidden text-[11px] text-muted-foreground sm:block">
-                {viewTitles[view].subtitle}
+                {viewTitles[viewName].subtitle}
               </p>
             </div>
           </div>
@@ -406,14 +425,14 @@ export function UsageDashboard() {
         </header>
 
         <div className="mx-auto w-full max-w-[1500px] px-4 py-5 sm:px-6 sm:py-6">
-          {view === "balance" ? (
+          {viewName === "balance" ? (
             <BalanceView />
           ) : (
           <>
           <HarnessSwitcher
             value={harness}
-            sources={data?.sources ?? []}
-            loading={!data}
+            sources={view?.sources ?? []}
+            loading={!view}
             onChange={changeHarness}
           />
 
@@ -505,34 +524,45 @@ export function UsageDashboard() {
                 <FilterX /> 清除筛选
               </Button>
             )}
-            <div className="ml-auto hidden text-[11px] text-muted-foreground xl:block">
-              {filteredRecords.length.toLocaleString("zh-CN")} 条本地记录
+            <div className="ml-auto hidden items-center gap-1.5 text-[11px] text-muted-foreground xl:flex">
+              {updating && <RefreshCw className="size-3 animate-spin" />}
+              {filteredCount.toLocaleString("zh-CN")} 条本地记录
             </div>
           </div>
 
-          {!data && loading && (
+          {!view && loading && (
             <div className="mb-4 rounded-lg border border-sky-500/20 bg-sky-500/[0.06] px-4 py-3 text-xs leading-5 text-sky-500">
               首次导入正在后台 worker 中进行，页面与其他本地 API 无需等待扫描完成。导入成功后会显示真实用量；空数据库不会按 0 条真实记录展示。
             </div>
           )}
 
-          {error && (
+          {syncError && (
             <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               <CircleAlert className="size-4 shrink-0" />
-              <span className="flex-1">{error}，请检查本地数据目录和数据库状态。</span>
+              <span className="flex-1">{syncError}，请检查本地数据目录和数据库状态。</span>
               <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
                 重试
               </Button>
             </div>
           )}
 
-          {!loading && activeSources.some((source) => !source.sourceAvailable) && (
+          {viewSection.error && (
+            <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <CircleAlert className="size-4 shrink-0" />
+              <span className="flex-1">{viewSection.error}，请检查本地数据库状态。</span>
+              <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
+                重试
+              </Button>
+            </div>
+          )}
+
+          {hasData && activeSources.some((source) => !source.sourceAvailable) && (
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-xs leading-5 text-amber-500">
               未找到 {activeSources.filter((source) => !source.sourceAvailable).map((source) => getHarnessLabel(source.harness)).join("、")} 的数据目录；其他 Harness 的统计不受影响。
             </div>
           )}
 
-          {view === "overview" && (
+          {viewName === "overview" && (
             <section className="panel mb-5 overflow-hidden">
               <div className="grid grid-cols-2 md:grid-cols-4">
                 {loading ? (
@@ -542,7 +572,7 @@ export function UsageDashboard() {
                       <Skeleton className="mt-4 h-7 w-24" />
                     </div>
                   ))
-                ) : !data ? (
+                ) : !hasData || !view.snapshotAvailable ? (
                   <div className="col-span-full flex min-h-32 flex-col items-center justify-center px-6 py-8 text-center">
                     <Database className="mb-3 size-6 text-muted-foreground/50" />
                     <div className="text-sm font-medium">尚无可显示的用量快照</div>
@@ -603,7 +633,8 @@ export function UsageDashboard() {
                   </>
                 )}
               </div>
-              {data &&
+              {hasData &&
+                view.snapshotAvailable &&
                 (chartNotice ? (
                   <div className="flex h-[292px] flex-col items-center justify-center border-t border-border/70 px-6 text-center">
                     <CircleHelp className="mb-3 size-7 text-muted-foreground/50" strokeWidth={1.5} />
@@ -632,11 +663,24 @@ export function UsageDashboard() {
                 <Skeleton key={index} className="mt-3 h-12 w-full" />
               ))}
             </div>
-          ) : data ? (
-            <UsageTables records={filteredRecords} tab={tab} onTabChange={setTab} />
+          ) : hasData && view.snapshotAvailable ? (
+            <UsageTables
+              groups={view.groups}
+              records={recordsSection.data}
+              recordsLoading={recordsSection.loading || recordsSection.updating}
+              page={controller.getPage()}
+              onPageChange={(page) => controller.setPage(page)}
+              tab={tab}
+              onTabChange={setTab}
+              filteredCount={filteredCount}
+              onExport={exportCsv}
+              updating={updating}
+            />
           ) : (
             <div className="panel px-5 py-10 text-center text-sm text-muted-foreground">
-              暂无已提交的用量快照。可点击“同步数据”重试，旧快照（如存在）不会因同步失败被清空。
+              {view && !view.snapshotAvailable && view.sync.phase === "importing"
+                ? "首次导入正在进行，完成后会自动展示真实用量。"
+                : "暂无已提交的用量快照。可点击“同步数据”重试，旧快照（如存在）不会因同步失败被清空。"}
             </div>
           )}
 
@@ -645,13 +689,14 @@ export function UsageDashboard() {
               <Database className="size-3" /> 数据仅在本机读取，不会上传会话内容
             </span>
             <span>
-              {data
+              {view
                 ? `已扫描 ${activeSources.reduce((sum, source) => sum + source.scannedFiles, 0)} 个会话文件${
                     activeSources.some((source) => source.skippedFiles > 0)
                       ? ` · ${activeSources.reduce((sum, source) => sum + source.skippedFiles, 0)} 个读取失败`
                       : ""
                   }`
                 : "正在连接本地数据"}
+              {lastSyncedAt !== null && ` · 上次同步 ${formatTime(lastSyncedAt)}`}
             </span>
           </footer>
           </>
@@ -688,7 +733,7 @@ export function UsageDashboard() {
             <div className="space-y-2.5">
               <div className="text-xs font-medium text-muted-foreground">本地数据源</div>
               {HARNESS_OPTIONS.map((option) => {
-                const source = data?.sources.find((candidate) => candidate.harness === option.id);
+                const source = view?.sources.find((candidate) => candidate.harness === option.id);
                 return (
                   <div key={option.id} className="rounded-lg border border-border/70 bg-muted/20 p-3.5">
                     <div className="flex items-center justify-between gap-3 text-xs">

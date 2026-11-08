@@ -101,6 +101,76 @@ export interface UsageSnapshotResponse extends UsageResponse {
   sync: UsageSyncStatus;
 }
 
+/** 聚合查询的筛选条件；与前端筛选栏一一对应。 */
+export interface UsageQueryFilters {
+  range: RangeKey;
+  harness: HarnessFilter;
+  project: string;
+  provider: string;
+  model: string;
+  billing: BillingFilter;
+}
+
+export const DEFAULT_USAGE_FILTERS: UsageQueryFilters = {
+  range: "today",
+  harness: "all",
+  project: "all",
+  provider: "all",
+  model: "all",
+  billing: "all",
+};
+
+/** POST /api/usage/sync 的小结果；不再随同步返回全部历史记录（M6）。 */
+export interface UsageSyncResult {
+  revision: number;
+  changed: boolean;
+  recordCount: number;
+  syncedAt: number;
+  sync: UsageSyncStatus;
+}
+
+export interface UsageGroups {
+  harness: GroupStat[];
+  provider: GroupStat[];
+  model: GroupStat[];
+  project: GroupStat[];
+}
+
+/** 下拉选项的轻量 facet；与汇总共用 Harness/供应商口径。 */
+export interface UsageFacets {
+  projects: string[];
+  providers: string[];
+  models: string[];
+}
+
+/** 服务端聚合视图；页面默认只下载该响应，不再下载全部历史 records。 */
+export interface UsageView {
+  revision: number;
+  snapshotAvailable: boolean;
+  syncedAt: number;
+  sync: UsageSyncStatus;
+  sources: UsageSource[];
+  scannedFiles: number;
+  skippedFiles: number;
+  summary: UsageSummary;
+  /** 侧栏“今日消耗”；只按 Harness 过滤，不随所选范围变化。 */
+  todaySummary: UsageSummary;
+  trend: TrendPoint[];
+  groups: UsageGroups;
+  facets: UsageFacets;
+  /** 当前筛选命中的记录总数；用于日志 tab 计数与导出入口。 */
+  filteredCount: number;
+}
+
+/** 请求日志分页页；页大小受服务端钳制。 */
+export interface UsageRecordsPage {
+  revision: number;
+  total: number;
+  page: number;
+  pageSize: number;
+  records: UsageRecord[];
+}
+
 export interface UsageSummary {
   requests: number;
   /** 计费 Credits 合计；mixedCreditUnits 为 true 时跨 Harness 相加，没有意义，不应展示。 */
@@ -297,11 +367,15 @@ function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
   };
 }
 
-export function buildTrend(
-  records: UsageRecord[],
+/**
+ * 趋势桶脚手架：按范围生成从早到晚的空桶。`all` 范围只为出现过的日期
+ * （presentDayKeys，升序）建桶；服务端聚合时传入 SQL 分组得到的日期键。
+ */
+export function createTrendPoints(
   range: RangeKey,
   now = new Date(),
-): TrendPoint[] {
+  presentDayKeys: string[] = [],
+): Map<string, TrendPoint> {
   const points = new Map<string, TrendPoint>();
   const hourly = range === "today" || range === "yesterday";
 
@@ -321,7 +395,7 @@ export function buildTrend(
       );
     }
   } else if (range === "all") {
-    const days = Array.from(new Set(records.map((record) => dateKey(record.timestamp)))).sort();
+    const days = Array.from(new Set(presentDayKeys)).sort();
     for (const day of days) {
       const date = new Date(`${day}T00:00:00`);
       points.set(
@@ -340,6 +414,21 @@ export function buildTrend(
       );
     }
   }
+
+  return points;
+}
+
+export function buildTrend(
+  records: UsageRecord[],
+  range: RangeKey,
+  now = new Date(),
+): TrendPoint[] {
+  const points = createTrendPoints(
+    range,
+    now,
+    records.map((record) => dateKey(record.timestamp)),
+  );
+  const hourly = range === "today" || range === "yesterday";
 
   for (const record of records) {
     const key = hourly

@@ -3,14 +3,26 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type {
-  HarnessId,
-  InputTokenSemantics,
-  UsageRecord,
-  UsageResponse,
-  UsageSnapshotResponse,
-  UsageSyncPhase,
-  UsageSyncStatus,
+import {
+  buildRecordsPage,
+  buildUsageView,
+  findAllUsageRecords,
+  findUsageRecord,
+  mapRecordRow,
+  type RecordRow,
+} from "@/lib/usage-query";
+import {
+  HARNESS_OPTIONS,
+  type HarnessId,
+  type UsageQueryFilters,
+  type UsageRecord,
+  type UsageRecordsPage,
+  type UsageResponse,
+  type UsageSnapshotResponse,
+  type UsageSource,
+  type UsageSyncPhase,
+  type UsageSyncStatus,
+  type UsageView,
 } from "@/lib/usage";
 
 const SCHEMA_VERSION = 2;
@@ -36,32 +48,6 @@ interface StatusRow {
 interface SnapshotRow {
   response_json: string;
   revision: number;
-}
-
-interface RecordRow {
-  id: number;
-  record_id: string;
-  request_id: string;
-  session_id: string;
-  harness: HarnessId;
-  project: string;
-  model: string;
-  provider: string;
-  timestamp_ms: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-  total_tokens: number;
-  input_token_semantics: InputTokenSemantics;
-  has_token_usage: number;
-  credits: number;
-  has_credit: number;
-  reported_credits: number | null;
-  billable: number | null;
-  context_usage_ratio: number | null;
-  estimated_duration_ms: number | null;
-  status: "success" | "error";
 }
 
 export interface UsageCommitResult {
@@ -744,34 +730,64 @@ export class UsageStore {
           .prepare("SELECT * FROM usage_records WHERE harness = ? ORDER BY timestamp_ms DESC, id ASC")
           .all(harness)
       : this.db.prepare("SELECT * FROM usage_records ORDER BY timestamp_ms DESC, id ASC").all()) as unknown as RecordRow[];
-    return rows.map((row) => ({
-      id: row.record_id,
-      requestId: row.request_id,
-      sessionId: row.session_id,
-      harness: row.harness,
-      project: row.project,
-      model: row.model,
-      provider: row.provider,
-      timestamp: row.timestamp_ms,
-      inputTokens: row.input_tokens,
-      outputTokens: row.output_tokens,
-      cacheReadTokens: row.cache_read_tokens,
-      cacheCreationTokens: row.cache_creation_tokens,
-      totalTokens: row.total_tokens,
-      inputTokenSemantics: row.input_token_semantics,
-      hasTokenUsage: row.has_token_usage === 1,
-      credits: row.credits,
-      hasCredit: row.has_credit === 1,
-      ...(row.reported_credits === null ? {} : { reportedCredits: row.reported_credits }),
-      ...(row.billable === null ? {} : { billable: row.billable === 1 }),
-      ...(row.context_usage_ratio === null
-        ? {}
-        : { contextUsageRatio: row.context_usage_ratio }),
-      ...(row.estimated_duration_ms === null
-        ? {}
-        : { estimatedDurationMs: row.estimated_duration_ms }),
-      status: row.status,
-    }));
+    return rows.map(mapRecordRow);
+  }
+
+  /**
+   * 服务端聚合视图（M6）。只读事务保证同轮查询读到同一提交代次，不会在两次
+   * SELECT 之间混入 worker 刚提交的新 revision。
+   */
+  queryView(filters: UsageQueryFilters, now = new Date()): UsageView {
+    return this.readTransaction(() => {
+      const sources = this.sourceList();
+      return buildUsageView(this.db, filters, now, {
+        status: this.getStatus(),
+        sources,
+      });
+    });
+  }
+
+  /** 请求日志分页；页大小由调用方（路由）钳制。 */
+  queryRecordsPage(
+    filters: UsageQueryFilters,
+    page: number,
+    pageSize: number,
+    now = new Date(),
+  ): UsageRecordsPage {
+    return this.readTransaction(() =>
+      buildRecordsPage(this.db, filters, page, pageSize, now, this.statusRow().revision),
+    );
+  }
+
+  /** 单条请求详情按 (harness, record_id) 查询。 */
+  queryRecordDetail(harness: HarnessId, recordId: string): UsageRecord | null {
+    return this.readTransaction(() => findUsageRecord(this.db, harness, recordId));
+  }
+
+  /** CSV 导出用：同筛选的全部记录（仅导出路由调用，不受分页限制）。 */
+  queryRecordsForExport(filters: UsageQueryFilters, now = new Date()): UsageRecord[] {
+    return this.readTransaction(() => findAllUsageRecords(this.db, filters, now));
+  }
+
+  private readTransaction<T>(run: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = run();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** usage_sources 表按 HARNESS_OPTIONS 顺序输出，供视图与设置弹窗展示。 */
+  private sourceList(): UsageSource[] {
+    const rows = Array.from(this.getSourceRows().entries());
+    const order = new Map(HARNESS_OPTIONS.map((option, index) => [option.id, index]));
+    return rows
+      .sort((a, b) => (order.get(a[0]) ?? order.size) - (order.get(b[0]) ?? order.size))
+      .map(([harness, row]) => ({ harness, ...row }));
   }
 
   close(): void {

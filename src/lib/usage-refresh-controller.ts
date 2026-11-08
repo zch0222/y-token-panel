@@ -2,8 +2,8 @@ import type { UsageResponse } from "@/lib/usage";
 
 export type UsageLoadTrigger = "initial" | "auto" | "manual" | "visibility";
 
-export interface UsageViewState {
-  data: UsageResponse | null;
+export interface UsageViewState<T = UsageResponse> {
+  data: T | null;
   /** 仅在没有任何成功数据时展示全页 loading。 */
   loading: boolean;
   /** 自动或回前台触发的后台刷新。 */
@@ -42,7 +42,7 @@ const browserEnvironment: UsageRefreshEnvironment = {
   },
 };
 
-const initialState: UsageViewState = {
+const initialState: UsageViewState<never> = {
   data: null,
   loading: true,
   refreshing: false,
@@ -55,10 +55,11 @@ const initialState: UsageViewState = {
  *
  * 所有触发源共享同一个 in-flight Promise；固定周期 tick 遇到 pending 只记为
  * 跳过，不向后端排队。控制器不依赖 React，便于用假时钟验证长时间运行。
+ * M6 起负载类型参数化：同步循环返回小结果，聚合查询由 dashboard 控制器管理。
  */
-export class UsageRefreshController {
-  private state: UsageViewState = initialState;
-  private readonly listeners = new Set<(state: UsageViewState) => void>();
+export class UsageRefreshController<T = UsageResponse> {
+  private state: UsageViewState<T> = initialState as UsageViewState<T>;
+  private readonly listeners = new Set<(state: UsageViewState<T>) => void>();
   private inFlight: Promise<void> | null = null;
   private requestGeneration = 0;
   private active = false;
@@ -71,12 +72,12 @@ export class UsageRefreshController {
   private maxPendingRequests = 0;
 
   constructor(
-    private readonly fetchUsage: () => Promise<UsageResponse>,
+    private readonly fetchUsage: () => Promise<T>,
     private readonly environment: UsageRefreshEnvironment = browserEnvironment,
     private readonly options: UsageRefreshOptions = {},
   ) {}
 
-  getState = (): UsageViewState => this.state;
+  getState = (): UsageViewState<T> => this.state;
 
   getStats = (): UsageRefreshStats => ({
     requests: this.requestCount,
@@ -85,7 +86,7 @@ export class UsageRefreshController {
     maxPendingRequests: this.maxPendingRequests,
   });
 
-  subscribe = (listener: (state: UsageViewState) => void): (() => void) => {
+  subscribe = (listener: (state: UsageViewState<T>) => void): (() => void) => {
     this.listeners.add(listener);
     listener(this.state);
     return () => this.listeners.delete(listener);
@@ -115,7 +116,7 @@ export class UsageRefreshController {
 
   refresh = (): Promise<void> => this.load("manual");
 
-  private setState(patch: Partial<UsageViewState>): void {
+  private setState(patch: Partial<UsageViewState<T>>): void {
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener(this.state);
   }
@@ -147,7 +148,8 @@ export class UsageRefreshController {
               snapshot.snapshotAvailable !== false
             ) {
               this.setState({
-                data: snapshot,
+                // querySnapshot 只用于 UsageResponse 形态的快照负载（M6 前的用法）。
+                data: snapshot as unknown as T,
                 loading: false,
                 refreshing: true,
                 error: null,

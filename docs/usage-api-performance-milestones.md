@@ -1,10 +1,10 @@
 # 用量性能改造里程碑与进度台账
 
 > 创建日期：2026-11-08<br>
-> 最后更新：2026-11-08<br>
-> 总体状态：**M2、M3、M4、M5 已完成；M1 仍待真实墙钟稳定性验收**<br>
-> 当前里程碑：**M5 已完成；下一步 M6（并保留 M1 验收事项）**<br>
-> 完成进度：**5 / 8 个里程碑**<br>
+> 最后更新：2026-11-09<br>
+> 总体状态：**M2、M3、M4、M5、M6 已完成；M1 仍待真实墙钟稳定性验收**<br>
+> 当前里程碑：**M6 已完成；下一步 M7（并保留 M1 验收事项）**<br>
+> 完成进度：**6 / 8 个里程碑**<br>
 > 调研依据：[用量性能调研报告](./usage-api-performance-research.md)
 
 ---
@@ -75,7 +75,7 @@
 | M3 | DSH 帧级增量导入 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 真实冻结数据未变化读取 252.43–307.47ms、正文 0B；单帧追加 3.05–5.81ms；309 项测试通过 |
 | M4 | Claude 与普通 JSONL 增量 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 真实冻结数据 5 来源冷导入与旧全量逐字段全等；未变化同步 8.93–117.01ms / 0B；332 项测试通过 |
 | M5 | Codex 依赖缓存与其余 reader 优化 | **已完成** | 2026-11-08 | 2026-11-08 | 本次提交 | 真实冻结数据未变化同步 55.89–72.40ms / 0B；小追加 198.99ms；353 项测试通过 |
-| M6 | 聚合、分页与 revision 驱动刷新 | 未开始 | — | — | — | — |
+| M6 | 聚合、分页与 revision 驱动刷新 | **已完成** | 2026-11-09 | 2026-11-09 | 本次提交 | 默认视图 4.47KB（legacy 12.75MB）；翻页 7.37–29.57ms；同步响应 0.23KB；384 项测试通过 |
 | M7 | 全量回归、性能验收与收尾 | 未开始 | — | — | — | — |
 
 ---
@@ -461,28 +461,29 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 
 ## 10. M6：聚合、分页与 revision 驱动刷新
 
-**状态：未开始**<br>
+**状态：已完成**<br>
 **前置：M2；可在 M3–M5 部分完成后并行推进。**<br>
-**目标：不再按刷新周期下载全部历史记录，查询由数据变更驱动。**
+**目标：不再按刷新周期下载全部历史记录，查询由数据变更驱动。**<br>
+**实施方案：新增 `usage-query.ts` 在 SQLite 内做与 `filterUsageRecords + summarizeRecords + buildTrend + groupRecords` 逐字段等价的聚合（summary SQL、`strftime(…, 'localtime')` 趋势分桶、四维度 GROUP BY、facet DISTINCT、`ORDER BY timestamp_ms DESC, id ASC` 分页），UsageStore 以只读事务包裹保证同轮查询同一提交代次。路由新增 `/api/usage/query`、`/records`、`/records/detail`、`/export`；`POST /api/usage/sync` 改为返回约 0.2KB 提交结果。前端以 `UsageDashboardController`（复用泛型化 `UsageRefreshController` 同步循环）实现 revision 驱动重查、滚动范围分钟失效、代次防覆盖与保留旧数据；legacy `GET /api/usage` 保留但页面不再调用。**
 
 ### 范围
 
-- [ ] 汇总卡片按当前时间和筛选在服务端/SQLite 聚合。
-- [ ] 趋势按当前范围在服务端/SQLite 聚合。
-- [ ] 项目、Harness、供应商和模型分组在服务端/SQLite 聚合。
-- [ ] 请求日志按相同筛选分页。
-- [ ] 单条详情按 ID 查询。
-- [ ] 下拉选项使用轻量 facet 查询。
-- [ ] 使用 revision 表示数据变化，只在 revision 改变时刷新页面。
-- [ ] 无新增记录的扫描只更新 lastSync。
-- [ ] 滚动“今天”等范围保留按分钟失效能力，处理跨午夜。
-- [ ] 切换筛选和分页时保留上一份数据，避免回到全页骨架。
-- [ ] 首载、后台查询、手动同步分别展示状态。
+- [x] 汇总卡片按当前时间和筛选在服务端/SQLite 聚合。
+- [x] 趋势按当前范围在服务端/SQLite 聚合。
+- [x] 项目、Harness、供应商和模型分组在服务端/SQLite 聚合。
+- [x] 请求日志按相同筛选分页。
+- [x] 单条详情按 ID 查询。
+- [x] 下拉选项使用轻量 facet 查询。
+- [x] 使用 revision 表示数据变化，只在 revision 改变时刷新页面。
+- [x] 无新增记录的扫描只更新 lastSync。
+- [x] 滚动“今天”等范围保留按分钟失效能力，处理跨午夜。
+- [x] 切换筛选和分页时保留上一份数据，避免回到全页骨架。
+- [x] 首载、后台查询、手动同步分别展示状态。
 
 ### 可选工作
 
-- [ ] 评估 React Query；若不引入，记录现有方案如何实现同 key 去重和保留旧数据。
-- [ ] 需要服务端后台主动更新时再增加 SSE；不作为本阶段的强制依赖。
+- [x] 评估 React Query；若不引入，记录现有方案如何实现同 key 去重和保留旧数据。（结论：不引入。同 key 去重由查询代次计数器实现——同键新查询自动作废在途旧响应；保留旧数据由查询 section 的 `data + updating` 状态实现——有旧数据时新查询不清空 data、只标记 updating；同步循环的去重复用 M1 `UsageRefreshController` 单飞。全部行为有 `usage-dashboard-controller.test.ts` 断言。）
+- [x] 需要服务端后台主动更新时再增加 SSE；不作为本阶段的强制依赖。（结论：未引入。自动同步 POST 的小响应（0.23KB）+ revision 比对已满足变更驱动；页面隐藏时同步循环暂停，无需服务端推送。）
 
 ### 主要参考
 
@@ -493,29 +494,33 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 
 ### 验收标准
 
-- [ ] 默认页面不再下载全部历史 records。
-- [ ] 请求日志页大小受控，翻页条件与汇总筛选一致。
-- [ ] 无新数据时自动扫描不会重查整页。
-- [ ] revision 变化后所有可见统计最终一致。
-- [ ] 快速切换筛选时旧响应不会覆盖新筛选结果。
-- [ ] 跨午夜后“今天”统计能自动纠正。
-- [ ] 前端所有现有筛选和统计口径测试通过。
+- [x] 默认页面不再下载全部历史 records。（默认筛选视图 4.47KB，浏览器实测不再调用 `GET /api/usage`；同步响应 0.23KB 且无 `records` 键。）
+- [x] 请求日志页大小受控，翻页条件与汇总筛选一致。（`parseUsageQueryParams` 统一解析筛选与分页，页大小钳制 1–100、默认 10；路由测试断言 400/钳制行为。）
+- [x] 无新数据时自动扫描不会重查整页。（控制器单测：自动同步 revision 未变时 view/records 查询次数不增加，只更新 `lastSyncedAt`；本轮真实数据因会话持续写入无法实测静态 no-op，以单测口径记录。）
+- [x] revision 变化后所有可见统计最终一致。（控制器单测：revision 变化重查视图与当前页；视图返回落后 revision 时立即追平重查。）
+- [x] 快速切换筛选时旧响应不会覆盖新筛选结果。（控制器单测：慢旧响应被代次丢弃。）
+- [x] 跨午夜后“今天”统计能自动纠正。（聚合单测：注入跨午夜 `now` 后 today 2→0、yesterday 覆盖前一日；控制器单测：分钟失效只对滚动范围触发、`all` 不触发。）
+- [x] 前端所有现有筛选和统计口径测试通过。（`npm test` 384 项全绿；其中 16 项 SQL vs JS 一致性测试覆盖 9 组筛选的 summary/trend/groups/facets/今日口径。）
 
 ### 实测记录
 
+生产环境（127.0.0.1:3100，`npm run build` + `npm start`，真实数据库 25,529 条 / 8 来源 / 396 文件；每项 10 次取 min–max，基线为同机同轮 legacy 实测）：
+
 | 项目 | 改造前 | 改造后 |
 | --- | ---: | ---: |
-| 默认响应大小 | 约 12.3MB | 待填写 |
-| 浏览器 JSON 解析耗时 | 待补基线 | 待填写 |
-| 无变化刷新查询次数 | 每次全量刷新 | 待填写 |
-| 筛选/翻页响应时间 | 待补基线 | 待填写 |
+| 默认响应大小 | legacy `GET /api/usage` 12.75MB（M0 实测约 12.3MB） | `GET /api/usage/query` 默认筛选 4.47KB；`range=all` 视图 52.61KB；日志页 4.88–6.03KB；`POST /sync` 0.23KB |
+| 浏览器 JSON 解析耗时 | legacy 12.75MB 快照 67.6ms/次（Node 5 次均值，代浏览器口径） | 4.47KB 视图 0.1ms/次 |
+| 无变化刷新查询次数 | 每次自动 tick 重下整包 12.75MB | 自动同步 revision 未变时 0 次统计/分页重查（单测断言）；同步请求恒为 0.23KB 小结果；滚动范围每分钟至多 1 次轻量视图重查 |
+| 筛选/翻页响应时间 | 筛选在前端完成、无独立请求；每次刷新仍需整包 GET 127.36–282.37ms | 默认视图 15.74–35.71ms；翻页 7.37–29.57ms（第 500 页 14.26–24.40ms）；详情 6.00–20.67ms；`range=all` 视图 503.83–744.23ms（见决策记录） |
+
+浏览器实测（IAB 真实渲染）：默认页正常展示今日汇总（83 条 / 22.8M Tokens / 99.0% 缓存命中）与模型分组；请求日志翻页正常（共 25,529 条 / 2,553 页）；单条详情按 ID 弹窗返回完整字段；切换“全部时间”后计数与分页正确更新且无全页骨架。
 
 ### 进度备注
 
-- 实际开始：—
-- 实际完成：—
-- Commit / PR：—
-- 当前备注：等待开始。
+- 实际开始：2026-11-09
+- 实际完成：2026-11-09
+- Commit / PR：本次提交
+- 当前备注：范围与验收全部完成。保留边界：`range=all` 聚合视图约 0.5–0.7s（十多条全表聚合扫描，默认 today 路径 24ms，见决策记录）；legacy `GET /api/usage` 与预序列化快照保留（兼容外部消费者），M7 评估是否移除；CSV 导出改为服务端生成后不再受浏览器内存限制；无变化自动同步行为由单测口径保障（真实数据在本机持续变化，无法实测静态 no-op 轮）。
 
 ---
 
@@ -616,6 +621,14 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 | 2026-11-08 | 同一 rollout 的副本（同尾部 UUID）任一变化时整组重新解析 | 归一化记录按 rolloutId 归属、无逐副本 provenance，副本集内新旧混用会产生陈旧记录；副本组极小（sessions + archived 各一份），整组重解析成本可控 | 已确认，M5 实施 |
 | 2026-11-08 | 单来源同步失败回退最后成功数据（usage_sources 摘要 + 归一化记录），不提交该来源增量游标 | 其余来源照常更新并提交；失败来源下一轮自动重试，游标保持不动；全部来源失败才整体失败保留旧快照。新增 UsageStore.getSourceRows 供回退 | 已确认，M5 实施 |
 | 2026-11-08 | 大文件读取按 FILE_IO_CONCURRENCY=8 有界并发，记录组装仍按文件序串行 | 冷导入并发读文件降低墙钟而不放大内存峰值；first-wins 去重依赖文件顺序，组装串行保证与全量 reader 口径一致 | 已确认，M5 实施 |
+| 2026-11-09 | M6 聚合直接查 `usage_records`（summary/趋势/分组/facet 共十余条 SQL），不经过 legacy 快照 JSON | 归一化表是增量写入的唯一事实来源，legacy 快照是 12.7MB 预序列化整体、无法按筛选下推；`queryView/queryRecordsPage` 以 BEGIN/COMMIT 只读事务包裹，同轮查询不会混入 worker 刚提交的新 revision | 已确认，M6 实施 |
+| 2026-11-09 | 趋势分桶用 `strftime(…,'unixepoch','localtime')`，空桶脚手架复用从 buildTrend 抽取的 createTrendPoints | SQL 分桶与 `dateKey` 同格式且由 SQLite 按 OS 时区处理（含 DST）；脚手架单一实现保证服务端聚合与 JS 全量口径逐桶一致（16 项一致性测试覆盖） | 已确认，M6 实施 |
+| 2026-11-09 | 日志分页排序 `timestamp_ms DESC, id ASC`（rowid），页码越界由服务端钳制并回填 | 时间戳并列时 JS 原排序不稳定，跨页可能重复/丢行；rowid 在同一 revision 内确定（全量替换按扫描序重插），revision 变化会触发整页重查 | 已确认，M6 实施 |
+| 2026-11-09 | 组内 Credits 按 (维度, harness) 二级分组单独查询 | 模型/项目组可跨 Harness，GroupTable 直接渲染分列 Credits（mixedCreditUnits）；与 summarizeRecords 组内口径一致 | 已确认，M6 实施 |
+| 2026-11-09 | `POST /api/usage/sync` 改返回 0.2KB 小提交结果；legacy `GET /api/usage` 保留但页面不再调用 | 消除每次同步 12.7MB 回传；legacy 端点预序列化零额外成本，保留供兼容与对照，M7 评估是否移除 | 已确认，M6 实施 |
+| 2026-11-09 | `range=all` 聚合视图 0.5–0.7s 记录为已知成本，本阶段不做覆盖索引 | 约 12–14 次全表聚合扫描（25k 宽行，单条 28–71ms，含 REAL 列与 CASE 表达式）；默认 today 路径 24ms 已达标，覆盖索引会让 40MB 库接近翻倍。若 M7 验收需要再评估合并查询或按维度物化 | 已确认，明确成本边界 |
+| 2026-11-09 | UsageRefreshController 泛型化为 `<T>` 复用为同步循环；querySnapshot 选项保持非泛型 | M1 的单飞、自动 tick 跳过、可见性暂停语义与全部既有测试原样保留；M6 只把负载从全量快照换成小提交结果，聚合查询由新的 dashboard 控制器管理 | 已确认，M6 实施 |
+| 2026-11-09 | 前端不引入 React Query（M6 复评维持 M1 决策） | 查询代次计数器实现同 key 去重（旧响应自动作废）、`data + updating` 双状态实现保留旧数据，行为全部有单测；SSE 亦不引入——0.23KB 同步小响应 + revision 比对已满足变更驱动 | 已确认，M6 复评 |
 
 ---
 
@@ -702,6 +715,20 @@ Kimi 参考：[cc-switch 未变化跳过](../../cc-switch/src-tauri/src/services
 - 未完成事项：M1 真实墙钟 30 分钟验收仍独立保留；legacy 全量响应约 12.7MB 与聚合分页留到 M6；新会话文件出现仍触发 Codex 来源级全量重建（与 M3/M4 同边界，provenance 方案后续评估）。
 - 下一步：开始 M6 聚合、分页与 revision 驱动刷新。
 - 已同步更新：顶部摘要、总览表、M5 范围与验收复选框、实测结果、决策记录、数据源矩阵和进度备注。
+
+### 2026-11-09 — M6：聚合、分页与 revision 驱动刷新完成
+
+- 状态变化：未开始 → 进行中 → 已完成。
+- 本次完成：新增 `src/lib/usage-query.ts`——summary/今日口径/趋势（`strftime` 本地时区分桶 + 共享 `createTrendPoints` 空桶脚手架）/四维度分组（组内 Credits 按 (维度, harness) 二级分组）/facet DISTINCT/分页/详情/参数解析与钳制；`UsageStore` 新增 `queryView` / `queryRecordsPage` / `queryRecordDetail` / `queryRecordsForExport`，全部以 BEGIN/COMMIT 只读事务保证同轮一致代次，`readNormalizedRecords` 改用共享 `mapRecordRow`；新增路由 `/api/usage/query`、`/records`、`/records/detail`、`/export`（CSV 服务端生成，列与原前端一致）并共享参数校验（非法枚举/页码 400、pageSize 钳制 1–100）；`POST /api/usage/sync` 改为返回 0.23KB 提交结果（revision/changed/recordCount/syncedAt/sync），不再回传全部记录；前端新增 `UsageDashboardController`（revision 驱动重查、滚动范围 60s 分钟失效且 `all` 范围豁免、可见性恢复补查、查询代次防旧响应覆盖、`data+updating` 保留旧数据、首载/后台/手动状态分离、查询失败由下一轮同步重试），同步循环复用泛型化的 `UsageRefreshController`（M1 语义与测试不变）；重写 `usage-dashboard.tsx` / `usage-tables.tsx` 数据流——汇总卡片/趋势/分组/facet 全部来自服务端视图，请求日志服务端分页（共 X 条 / n/m 页），详情按 (harness, recordId) 查询并乐观展示行内数据，页脚新增“上次同步”时间；`buildTrend` 抽出 `createTrendPoints` 保持 JS 口径单一实现。
+- 修改范围：新增 `src/lib/usage-query.ts`、`usage-query.test.ts`、`usage-csv.ts`、`usage-dashboard-controller.ts`、`usage-dashboard-controller.test.ts`、4 个 API 路由与 `query/route.test.ts`、`sync/route.test.ts`；修改 `usage.ts`（视图/分页/筛选类型 + `createTrendPoints`）、`usage-store.ts`（查询方法 + 共享行映射）、`usage-refresh-controller.ts`（泛型化 `<T>`）、`usage-sync` 的 sync 路由、`usage-dashboard.tsx`、`usage-tables.tsx`、README 与本台账。
+- 测试命令与结果：最终 `npm test` 通过 28 个文件 / 384 项（M5 为 353 项，净增 31 项：SQL vs JS 口径一致性 16 项、dashboard 控制器 7 项、查询路由 5 项、同步路由 3 项）；`npm run typecheck`、`npm run lint`、`npm run build` 均通过。
+- 性能实测：生产构建（127.0.0.1:3100，真实库 25,529 条）。legacy `GET /api/usage` 12.75MB / 127.36–282.37ms；新默认视图 4.47KB / 15.74–35.71ms；`range=all` 视图 52.61KB / 503.83–744.23ms；日志页 6.03KB / 7.37–29.57ms（第 500 页 14.26–24.40ms）；详情 0.60KB / 6.00–20.67ms；`POST /sync` 0.23KB（含 revision/changed）。JSON.parse：legacy 67.6ms/次 → 视图 0.1ms/次。
+- 一致性验证：16 项一致性测试以固定种子随机数据（400 条 × 9 组筛选）断言 SQL 聚合与 `filterUsageRecords + summarizeRecords + buildTrend + groupRecords` 逐字段一致（整数全等、浮点 1e-8 内），含跨午夜 today/yesterday 纠正、分页全覆盖无重复、facet 口径、空库不伪造零用量。浏览器（IAB）真实渲染验证：默认页汇总/分组/趋势正常，日志翻页（25,529 条 / 2,553 页）、按 ID 详情弹窗、切换“全部时间”计数更新且无全页骨架。
+- Commit / PR：本次提交。
+- 遇到的问题与决策：测试先行暴露了启动期双查询（首轮同步先于视图返回时 seenRevision 为空触发多余重查），改为只登记 revision、由在途视图带出数据；CSV BOM 无法用 `response.text()` 断言（按编码标准解码剥前导 BOM），改以原始字节校验 EF BB BF；`group credits` 初版漏了组内跨 Harness 分列，按 (维度, harness) 二级分组修复；`range=all` 视图 0.5–0.7s 定位为十余次全表聚合扫描的已知成本（单条 28–71ms，25k 宽行），本阶段不做覆盖索引（决策记录）；本轮真实数据因会话持续写入，两轮实测 sync 均 `changed=true`（25,522→25,523），无变化刷新行为以单测口径记录。
+- 未完成事项：M1 真实墙钟 30 分钟验收仍独立保留；legacy `GET /api/usage` 与预序列化快照保留待 M7 评估移除；`range=all` 聚合性能留作 M7 评估项（合并查询或按维度物化）；多标签页共享 revision 的端到端场景归入 M7 并发回归。
+- 下一步：开始 M7 全量回归、性能验收与收尾。
+- 已同步更新：顶部摘要、总览表、M6 范围与验收复选框、实测结果、决策记录和进度备注。
 
 ---
 

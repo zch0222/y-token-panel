@@ -1,5 +1,4 @@
 import { connection } from "next/server";
-import { createUsageSnapshotResponse } from "@/lib/usage-http";
 import { getUsageStore } from "@/lib/usage-store";
 import { requestUsageSync } from "@/lib/usage-sync";
 
@@ -19,11 +18,21 @@ export async function GET() {
   }
 }
 
+/**
+ * 同步只返回提交结果（revision 等），不再回传全部历史记录；
+ * 客户端按 revision 变化决定是否重查聚合视图（M6）。
+ */
 export async function POST() {
   await connection();
   try {
-    await requestUsageSync();
-    return createUsageSnapshotResponse();
+    const result = await requestUsageSync();
+    const sync = getUsageStore().getStatus();
+    return Response.json({ ...result, sync }, {
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Usage-Revision": String(result.revision),
+      },
+    });
   } catch (error) {
     console.error("Failed to synchronize local harness usage", error);
     let sync;

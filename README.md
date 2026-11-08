@@ -83,10 +83,13 @@ Codex / ChatGPT（Codex CLI 与 Codex Desktop）数据源是其本地 rollout �
 
 用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
 
-- `GET /api/usage` 只读取最后成功快照，不扫描原始会话日志；数据库为空时明确返回 `snapshotAvailable: false`。
-- `POST /api/usage/sync` 在独立 worker 中执行扫描、解析和事务写入，同进程重叠请求共享同一轮同步。
+- `GET /api/usage` 只读取最后成功快照，不扫描原始会话日志；数据库为空时明确返回 `snapshotAvailable: false`。这是 M6 前的 legacy 响应（仍含全部 records，约 12.7MB），保留用于兼容，页面默认不再调用。
+- `GET /api/usage/query?range=&harness=&project=&provider=&model=&billing=` 在 SQLite 中聚合返回汇总卡片、趋势、各维度分组、下拉 facet 与来源状态（默认筛选约 4–50KB），带 `X-Usage-Revision` 头；非法参数返回 400。
+- `GET /api/usage/records?…&page=&pageSize=` 按同一筛选分页返回请求日志，页大小服务端钳制在 1–100（默认 10）；`GET /api/usage/records/detail?harness=&recordId=` 按 ID 查询单条详情。
+- `GET /api/usage/export?…` 按同一筛选导出全部命中记录的 CSV。
+- `POST /api/usage/sync` 在独立 worker 中执行扫描、解析和事务写入，同进程重叠请求共享同一轮同步；只返回 revision 等小结果（约 0.2KB），不再回传全部记录，客户端按 revision 变化决定是否重查聚合视图。
 - `GET /api/usage/sync` 查询导入状态、revision、最后成功时间与错误；同步失败不会清空旧快照。
-- worker 默认最长运行 10 分钟，可通过 **USAGE_SYNC_TIMEOUT_MS** 调整（毫秒）。超时后释放本轮请求，可重新同步。
+- 前端刷新由 revision 驱动：数据未变化时自动同步只更新“上次同步”时间；滚动范围（当天等）保留按分钟失效以处理跨午夜。worker 默认最长运行 10 分钟，可通过 **USAGE_SYNC_TIMEOUT_MS** 调整（毫秒）。超时后释放本轮请求，可重新同步。
 
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
 

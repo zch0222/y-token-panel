@@ -32,7 +32,6 @@ import { cn } from "@/lib/utils";
 import {
   formatAggregateTokensPerSecond,
   formatEstimatedTokensPerSecond,
-  getEstimatedTokensPerSecond,
   type SpeedTotals,
 } from "@/lib/speed";
 import {
@@ -41,18 +40,27 @@ import {
   formatPercent,
   formatTime,
   getHarnessLabel,
-  groupRecords,
   type GroupStat,
   type HarnessId,
+  type UsageGroups,
   type UsageRecord,
+  type UsageRecordsPage,
 } from "@/lib/usage";
 
 export type DetailTab = "logs" | "providers" | "models" | "projects" | "harnesses";
 
 interface UsageTablesProps {
-  records: UsageRecord[];
+  /** 服务端聚合的各维度分组（M6 起不再由前端全量计算）。 */
+  groups: UsageGroups | null;
+  records: UsageRecordsPage | null;
+  recordsLoading: boolean;
+  page: number;
+  onPageChange: (page: number) => void;
   tab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
+  filteredCount: number;
+  onExport: () => void;
+  updating: boolean;
 }
 
 const headClass = "h-11 border-border/70 px-4 text-xs font-normal text-muted-foreground";
@@ -237,66 +245,23 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
   );
 }
 
-function exportCsv(records: UsageRecord[]) {
-  const headers = [
-    "时间",
-    "Harness",
-    "项目",
-    "供应商",
-    "模型",
-    "输入 Tokens",
-    "输出 Tokens",
-    "缓存读取 Tokens",
-    "总 Tokens",
-    "估算耗时(ms)",
-    "估算速度(tok/s)",
-    "计费 Credits",
-    "服务端报告 Credits",
-    "是否计费",
-    "状态",
-    "会话 ID",
-  ];
-  const escape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
-  const rows = records.map((record) => [
-    new Date(record.timestamp).toISOString(),
-    getHarnessLabel(record.harness),
-    record.project,
-    record.provider,
-    record.model,
-    record.hasTokenUsage ? record.inputTokens : "",
-    record.hasTokenUsage ? record.outputTokens : "",
-    record.hasTokenUsage ? record.cacheReadTokens : "",
-    record.hasTokenUsage ? record.totalTokens : "",
-    record.estimatedDurationMs ?? "",
-    getEstimatedTokensPerSecond(record)?.toFixed(1) ?? "",
-    record.hasCredit ? record.credits : "",
-    record.reportedCredits ?? "",
-    record.billable === undefined ? "" : record.billable ? "是" : "否",
-    record.status,
-    record.sessionId,
-  ]);
-  const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\r\n");
-  const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `ai-harness-usage-${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 function RequestTable({
   records,
+  total,
+  page,
+  pageSize,
+  onPageChange,
   onSelect,
 }: {
   records: UsageRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
   onSelect: (record: UsageRecord) => void;
 }) {
-  const [page, setPage] = useState(0);
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(records.length / pageSize));
-  const currentPage = Math.min(page, pageCount - 1);
-  const rows = records.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const rows = records;
 
   return (
     <div>
@@ -397,28 +362,28 @@ function RequestTable({
         </TableBody>
       </Table>
       <div className="flex h-14 items-center justify-between border-t border-border/70 px-5 text-xs text-muted-foreground">
-        <span>共 {records.length.toLocaleString("zh-CN")} 条请求</span>
+        <span>共 {total.toLocaleString("zh-CN")} 条请求</span>
         <div className="flex items-center gap-2">
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             aria-label="上一页"
-            disabled={currentPage === 0}
-            onClick={() => setPage(Math.max(0, currentPage - 1))}
+            disabled={page === 0}
+            onClick={() => onPageChange(Math.max(0, page - 1))}
           >
             <ChevronLeft />
           </Button>
           <span className="min-w-16 text-center tabular-nums">
-            {currentPage + 1} / {pageCount}
+            {page + 1} / {pageCount}
           </span>
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             aria-label="下一页"
-            disabled={currentPage >= pageCount - 1}
-            onClick={() => setPage(Math.min(pageCount - 1, currentPage + 1))}
+            disabled={page >= pageCount - 1}
+            onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
           >
             <ChevronRight />
           </Button>
@@ -437,18 +402,51 @@ function DetailItem({ label, value, mono = false }: { label: string; value: stri
   );
 }
 
-export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
-  const [selected, setSelected] = useState<UsageRecord | null>(null);
-  const models = groupRecords(records, "model");
-  const providers = groupRecords(records, "provider");
-  const projects = groupRecords(records, "project");
-  const harnesses = groupRecords(records, "harness");
+export function UsageTables({
+  groups,
+  records,
+  recordsLoading,
+  page,
+  onPageChange,
+  tab,
+  onTabChange,
+  filteredCount,
+  onExport,
+  updating,
+}: UsageTablesProps) {
+  // 详情按 (harness, record_id) 查询；先用行内数据乐观展示，返回后替换。
+  const [detail, setDetail] = useState<UsageRecord | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const selectRecord = (record: UsageRecord) => {
+    setDetail(record);
+    setDetailLoading(true);
+    const search = new URLSearchParams({
+      harness: record.harness,
+      recordId: record.id,
+    });
+    fetch(`/api/usage/records/detail?${search}`, { cache: "no-store" })
+      .then(async (response) => (response.ok ? ((await response.json()) as UsageRecord) : null))
+      .then((fresh) => {
+        if (fresh) setDetail(fresh);
+      })
+      .catch(() => undefined)
+      .finally(() => setDetailLoading(false));
+  };
+
+  const emptyGroups: UsageGroups = {
+    harness: [],
+    provider: [],
+    model: [],
+    project: [],
+  };
+  const resolved = groups ?? emptyGroups;
   const tabItems: Array<{ id: DetailTab; label: string; count: number }> = [
-    { id: "logs", label: "请求日志", count: records.length },
-    { id: "harnesses", label: "Harness", count: harnesses.length },
-    { id: "providers", label: "供应商", count: providers.length },
-    { id: "models", label: "模型", count: models.length },
-    { id: "projects", label: "项目", count: projects.length },
+    { id: "logs", label: "请求日志", count: filteredCount },
+    { id: "harnesses", label: "Harness", count: resolved.harness.length },
+    { id: "providers", label: "供应商", count: resolved.provider.length },
+    { id: "models", label: "模型", count: resolved.model.length },
+    { id: "projects", label: "项目", count: resolved.project.length },
   ];
 
   return (
@@ -468,7 +466,14 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
               )}
             >
               {item.label}
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{item.count}</span>
+              <span
+                className={cn(
+                  "rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground",
+                  updating && item.id === tab && "animate-pulse",
+                )}
+              >
+                {item.count}
+              </span>
               <span
                 className={cn(
                   "absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-foreground transition-opacity",
@@ -482,98 +487,111 @@ export function UsageTables({ records, tab, onTabChange }: UsageTablesProps) {
           type="button"
           variant="ghost"
           size="sm"
-          disabled={records.length === 0}
-          onClick={() => exportCsv(records)}
+          disabled={filteredCount === 0}
+          onClick={onExport}
           className="text-muted-foreground"
         >
           <Download /> 导出 CSV
         </Button>
       </div>
 
-      {tab === "logs" && <RequestTable records={records} onSelect={setSelected} />}
-      {tab === "harnesses" && <GroupTable stats={harnesses} dimension="harnesses" />}
-      {tab === "providers" && <GroupTable stats={providers} dimension="providers" />}
-      {tab === "models" && <GroupTable stats={models} dimension="models" />}
-      {tab === "projects" && <GroupTable stats={projects} dimension="projects" />}
+      {tab === "logs" && (
+        <RequestTable
+          records={records?.records ?? []}
+          total={records?.total ?? 0}
+          page={page}
+          pageSize={records?.pageSize ?? 10}
+          onPageChange={onPageChange}
+          onSelect={selectRecord}
+        />
+      )}
+      {tab === "harnesses" && <GroupTable stats={resolved.harness} dimension="harnesses" />}
+      {tab === "providers" && <GroupTable stats={resolved.provider} dimension="providers" />}
+      {tab === "models" && <GroupTable stats={resolved.model} dimension="models" />}
+      {tab === "projects" && <GroupTable stats={resolved.project} dimension="projects" />}
+      {tab === "logs" && recordsLoading && records === null && (
+        <div className="px-5 pb-5 text-xs text-muted-foreground">正在加载请求日志…</div>
+      )}
 
-      <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+      <Dialog open={detail !== null} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[560px]">
-          {selected && (
+          {detail && (
             <>
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2.5 pr-6">
-                  <ProviderMark name={selected.provider} />
-                  <span className="font-mono text-sm">{selected.model}</span>
+                  <ProviderMark name={detail.provider} />
+                  <span className="font-mono text-sm">{detail.model}</span>
                 </DialogTitle>
                 <DialogDescription>
-                  {formatTime(selected.timestamp)} · {getHarnessLabel(selected.harness)} · {selected.project}
+                  {formatTime(detail.timestamp)} · {getHarnessLabel(detail.harness)} · {detail.project}
+                  {detailLoading ? " · 正在按 ID 查询详情…" : ""}
                 </DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                 <DetailItem
                   label="输入 Tokens"
-                  value={selected.hasTokenUsage ? selected.inputTokens.toLocaleString("zh-CN") : "未上报"}
+                  value={detail.hasTokenUsage ? detail.inputTokens.toLocaleString("zh-CN") : "未上报"}
                 />
                 <DetailItem
                   label="输出 Tokens"
-                  value={selected.hasTokenUsage ? selected.outputTokens.toLocaleString("zh-CN") : "未上报"}
+                  value={detail.hasTokenUsage ? detail.outputTokens.toLocaleString("zh-CN") : "未上报"}
                 />
                 <DetailItem
                   label="总 Tokens"
-                  value={selected.hasTokenUsage ? selected.totalTokens.toLocaleString("zh-CN") : "未上报"}
+                  value={detail.hasTokenUsage ? detail.totalTokens.toLocaleString("zh-CN") : "未上报"}
                 />
                 <DetailItem
                   label="缓存读取"
-                  value={selected.hasTokenUsage ? selected.cacheReadTokens.toLocaleString("zh-CN") : "未上报"}
+                  value={detail.hasTokenUsage ? detail.cacheReadTokens.toLocaleString("zh-CN") : "未上报"}
                 />
                 <DetailItem
                   label="缓存写入"
-                  value={selected.hasTokenUsage ? selected.cacheCreationTokens.toLocaleString("zh-CN") : "未上报"}
+                  value={detail.hasTokenUsage ? detail.cacheCreationTokens.toLocaleString("zh-CN") : "未上报"}
                 />
-                <DetailItem label="计费 Credits" value={formatCredits(selected.credits, selected.hasCredit)} />
-                {selected.estimatedDurationMs !== undefined && (
+                <DetailItem label="计费 Credits" value={formatCredits(detail.credits, detail.hasCredit)} />
+                {detail.estimatedDurationMs !== undefined && (
                   <DetailItem
                     label="估算耗时"
-                    value={`${(selected.estimatedDurationMs / 1000).toFixed(1)} s`}
+                    value={`${(detail.estimatedDurationMs / 1000).toFixed(1)} s`}
                   />
                 )}
-                {selected.estimatedDurationMs !== undefined && (
+                {detail.estimatedDurationMs !== undefined && (
                   <DetailItem
                     label="估算速度"
                     value={
-                      formatEstimatedTokensPerSecond(selected) == null
+                      formatEstimatedTokensPerSecond(detail) == null
                         ? "—（未达估算门槛）"
-                        : `≈ ${formatEstimatedTokensPerSecond(selected)} tok/s`
+                        : `≈ ${formatEstimatedTokensPerSecond(detail)} tok/s`
                     }
                   />
                 )}
               </div>
               <div className="space-y-2.5">
-                {selected.billable !== undefined && (
-                  <DetailItem label="计费状态" value={selected.billable ? "计费" : "不计费"} />
+                {detail.billable !== undefined && (
+                  <DetailItem label="计费状态" value={detail.billable ? "计费" : "不计费"} />
                 )}
-                {selected.billable === false && selected.reportedCredits !== undefined && (
+                {detail.billable === false && detail.reportedCredits !== undefined && (
                   <DetailItem
                     label="服务端报告 Credits"
-                    value={`${formatCredits(selected.reportedCredits)}（未扣费）`}
+                    value={`${formatCredits(detail.reportedCredits)}（未扣费）`}
                   />
                 )}
-                {selected.contextUsageRatio !== undefined && (
+                {detail.contextUsageRatio !== undefined && (
                   <DetailItem
                     label="请求时上下文占用"
-                    value={formatPercent(selected.contextUsageRatio)}
+                    value={formatPercent(detail.contextUsageRatio)}
                   />
                 )}
-                <DetailItem label="会话 ID" value={selected.sessionId} mono />
-                <DetailItem label="请求 ID" value={selected.requestId} mono />
+                <DetailItem label="会话 ID" value={detail.sessionId} mono />
+                <DetailItem label="请求 ID" value={detail.requestId} mono />
               </div>
               <p className="text-xs leading-5 text-muted-foreground">
-                {selected.hasTokenUsage
-                  ? selected.inputTokenSemantics === "fresh"
+                {detail.hasTokenUsage
+                  ? detail.inputTokenSemantics === "fresh"
                     ? "输入 Tokens 不包含缓存读写；总 Tokens 已合并输入、输出与缓存读写。"
                     : "输入 Tokens 已包含缓存读取；总 Tokens 采用原始 total_tokens，不重复累计。"
                   : "该 Harness 的本地记录未提供有效 Token 数值，仅展示 Credits 与请求信息。"}
-                {selected.estimatedDurationMs !== undefined &&
+                {detail.estimatedDurationMs !== undefined &&
                   " 速度与耗时为估算值：按会话时间戳推算（消息完成时刻 − 请求起点），含首字等待，仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。"}
               </p>
             </>
