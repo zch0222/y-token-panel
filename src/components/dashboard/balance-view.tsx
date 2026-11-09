@@ -550,6 +550,13 @@ function ProviderDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <form
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (step === "form") void submit();
+          }}
+        >
         {step === "pick" ? (
           <div className="space-y-4 py-1">
             <div>
@@ -833,7 +840,7 @@ function ProviderDialog({
               </label>
             )}
             {error && (
-              <div className="flex items-start gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
+              <div role="alert" className="flex items-start gap-1.5 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-400">
                 <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
                 <span>{error}</span>
               </div>
@@ -845,12 +852,13 @@ function ProviderDialog({
             取消
           </Button>
           {step === "form" && (
-            <Button type="button" size="sm" disabled={submitting} onClick={() => void submit()}>
+            <Button type="submit" size="sm" disabled={submitting}>
               {submitting && <RefreshCw className="animate-spin" />}
               {editing ? "保存" : "添加"}
             </Button>
           )}
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );
@@ -896,9 +904,9 @@ export function BalanceView() {
     return () => window.clearTimeout(timer);
   }, [loadProviders]);
 
-  // 相对时间每 30s 重算（对齐 cc-switch QuotaLines useNow 的粒度）。
+  // 相对时间与 5 秒限流倒计时使用同一时钟，避免倒计时长时间停留在旧值。
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -929,11 +937,12 @@ export function BalanceView() {
       ...previous,
       [id]: Date.now() + Math.max(0, remain),
     }));
-    return outcome.status === "fetched" && (outcome.result?.success ?? false);
+    // 限流 / 冷却是正常跳过，不应展示为查询失败。
+    return outcome.status === "fetched" ? (outcome.result?.success ?? false) : null;
   }, []);
 
   const postQuery = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string): Promise<boolean | null> => {
       try {
         const response = await fetch("/api/balance/query", {
           method: "POST",
@@ -964,14 +973,16 @@ export function BalanceView() {
         next.delete(id);
         return next;
       });
-      setFeedbacks((previous) => ({ ...previous, [id]: ok ? "ok" : "fail" }));
-      window.setTimeout(() => {
-        setFeedbacks((previous) => {
-          const next = { ...previous };
-          delete next[id];
-          return next;
-        });
-      }, REFRESH_RESULT_MS);
+      if (ok !== null) {
+        setFeedbacks((previous) => ({ ...previous, [id]: ok ? "ok" : "fail" }));
+        window.setTimeout(() => {
+          setFeedbacks((previous) => {
+            const next = { ...previous };
+            delete next[id];
+            return next;
+          });
+        }, REFRESH_RESULT_MS);
+      }
     },
     [postQuery, refreshingIds],
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   CheckCircle2,
@@ -108,15 +108,23 @@ function ProviderMark({ name, small = false }: { name: string; small?: boolean }
   );
 }
 
-function EmptyRow({ colSpan }: { colSpan: number }) {
+function EmptyRow({
+  colSpan,
+  title = "当前筛选范围暂无用量",
+  description = "切换时间范围或清除筛选后再看看",
+}: {
+  colSpan: number;
+  title?: string;
+  description?: string;
+}) {
   return (
     <TableRow>
       <TableCell colSpan={colSpan} className="h-56 text-center">
         <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground">
           <FileClock className="size-8 opacity-45" strokeWidth={1.5} />
           <div>
-            <div className="text-sm">当前筛选范围暂无用量</div>
-            <div className="mt-1 text-xs opacity-70">切换时间范围或清除筛选后再看看</div>
+            <div className="text-sm">{title}</div>
+            <div className="mt-1 text-xs opacity-70">{description}</div>
           </div>
         </div>
       </TableCell>
@@ -260,6 +268,8 @@ function RequestTable({
   total,
   page,
   pageSize,
+  loading,
+  unavailable,
   onPageChange,
   onPageSizeChange,
   onSelect,
@@ -268,6 +278,8 @@ function RequestTable({
   total: number;
   page: number;
   pageSize: number;
+  loading: boolean;
+  unavailable: boolean;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
   onSelect: (record: UsageRecord) => void;
@@ -298,7 +310,11 @@ function RequestTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.length === 0 ? (
+          {loading ? (
+            <EmptyRow colSpan={11} title="正在加载请求日志…" description="请稍候，日志返回后会自动展示" />
+          ) : unavailable ? (
+            <EmptyRow colSpan={11} title="请求日志加载失败" description="请点击上方“重试”，请勿将此状态理解为零条请求" />
+          ) : rows.length === 0 ? (
             <EmptyRow colSpan={11} />
           ) : (
             rows.map((record) => (
@@ -308,7 +324,10 @@ function RequestTable({
                 aria-label={`查看 ${record.model} 请求详情`}
                 onClick={() => onSelect(record)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") onSelect(record);
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(record);
+                  }
                 }}
                 className="cursor-pointer border-border/70 hover:bg-muted/35 focus-visible:bg-muted/40 focus-visible:outline-none"
               >
@@ -373,9 +392,9 @@ function RequestTable({
           )}
         </TableBody>
       </Table>
-      <div className="flex h-14 items-center justify-between border-t border-border/70 px-5 text-xs text-muted-foreground">
+      <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-t border-border/70 px-3 py-2 text-xs text-muted-foreground sm:px-5">
         <span>共 {total.toLocaleString("zh-CN")} 条请求</span>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-4">
           <Select
             value={String(pageSize)}
             onValueChange={(value) => {
@@ -450,21 +469,40 @@ export function UsageTables({
   // 详情按 (harness, record_id) 查询；先用行内数据乐观展示，返回后替换。
   const [detail, setDetail] = useState<UsageRecord | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const detailRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => () => detailRequest.current?.abort(), []);
+
+  const closeDetail = () => {
+    detailRequest.current?.abort();
+    detailRequest.current = null;
+    setDetail(null);
+    setDetailLoading(false);
+  };
 
   const selectRecord = (record: UsageRecord) => {
+    // 快速切换行时只接受最后一次请求，避免慢响应覆盖用户正在查看的详情。
+    detailRequest.current?.abort();
+    const request = new AbortController();
+    detailRequest.current = request;
     setDetail(record);
     setDetailLoading(true);
     const search = new URLSearchParams({
       harness: record.harness,
       recordId: record.id,
     });
-    fetch(`/api/usage/records/detail?${search}`, { cache: "no-store" })
+    fetch(`/api/usage/records/detail?${search}`, { cache: "no-store", signal: request.signal })
       .then(async (response) => (response.ok ? ((await response.json()) as UsageRecord) : null))
       .then((fresh) => {
-        if (fresh) setDetail(fresh);
+        if (fresh && !request.signal.aborted) setDetail(fresh);
       })
       .catch(() => undefined)
-      .finally(() => setDetailLoading(false));
+      .finally(() => {
+        if (detailRequest.current === request) {
+          detailRequest.current = null;
+          setDetailLoading(false);
+        }
+      });
   };
 
   const emptyGroups: UsageGroups = {
@@ -484,17 +522,36 @@ export function UsageTables({
 
   return (
     <section id="usage-details" className="panel overflow-hidden">
-      <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-border/70 pr-3">
-        <div role="tablist" aria-label="用量明细" className="flex h-14 items-stretch px-2">
-          {tabItems.map((item) => (
+      <div className="flex h-14 items-center border-b border-border/70 pr-2 sm:pr-3">
+        <div
+          role="tablist"
+          aria-label="用量明细"
+          className="scrollbar-subtle flex h-14 min-w-0 flex-1 items-stretch overflow-x-auto px-1 sm:px-2"
+        >
+          {tabItems.map((item, index) => (
             <button
               key={item.id}
+              id={`usage-tab-${item.id}`}
               type="button"
               role="tab"
               aria-selected={tab === item.id}
+              aria-controls={`usage-panel-${item.id}`}
+              tabIndex={tab === item.id ? 0 : -1}
               onClick={() => onTabChange(item.id)}
+              onKeyDown={(event) => {
+                let nextIndex: number | null = null;
+                if (event.key === "ArrowRight") nextIndex = (index + 1) % tabItems.length;
+                if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabItems.length) % tabItems.length;
+                if (event.key === "Home") nextIndex = 0;
+                if (event.key === "End") nextIndex = tabItems.length - 1;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                const nextTab = tabItems[nextIndex].id;
+                onTabChange(nextTab);
+                document.getElementById(`usage-tab-${nextTab}`)?.focus();
+              }}
               className={cn(
-                "relative flex items-center gap-1.5 px-4 text-[13px] font-medium transition-colors",
+                "relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-[13px] font-medium transition-colors sm:px-4",
                 tab === item.id ? "text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -522,32 +579,37 @@ export function UsageTables({
           size="sm"
           disabled={filteredCount === 0}
           onClick={onExport}
-          className="text-muted-foreground"
+          className="shrink-0 text-muted-foreground"
         >
           <Download /> 导出 CSV
         </Button>
       </div>
 
-      {tab === "logs" && (
-        <RequestTable
-          records={records?.records ?? []}
-          total={records?.total ?? 0}
-          page={page}
-          pageSize={pageSize}
-          onPageChange={onPageChange}
-          onPageSizeChange={onPageSizeChange}
-          onSelect={selectRecord}
-        />
-      )}
-      {tab === "harnesses" && <GroupTable stats={resolved.harness} dimension="harnesses" />}
-      {tab === "providers" && <GroupTable stats={resolved.provider} dimension="providers" />}
-      {tab === "models" && <GroupTable stats={resolved.model} dimension="models" />}
-      {tab === "projects" && <GroupTable stats={resolved.project} dimension="projects" />}
-      {tab === "logs" && recordsLoading && records === null && (
-        <div className="px-5 pb-5 text-xs text-muted-foreground">正在加载请求日志…</div>
-      )}
+      <div
+        id={`usage-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`usage-tab-${tab}`}
+      >
+        {tab === "logs" && (
+          <RequestTable
+            records={records?.records ?? []}
+            total={records?.total ?? 0}
+            page={page}
+            pageSize={pageSize}
+            loading={recordsLoading && records === null}
+            unavailable={records === null && !recordsLoading}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+            onSelect={selectRecord}
+          />
+        )}
+        {tab === "harnesses" && <GroupTable stats={resolved.harness} dimension="harnesses" />}
+        {tab === "providers" && <GroupTable stats={resolved.provider} dimension="providers" />}
+        {tab === "models" && <GroupTable stats={resolved.model} dimension="models" />}
+        {tab === "projects" && <GroupTable stats={resolved.project} dimension="projects" />}
+      </div>
 
-      <Dialog open={detail !== null} onOpenChange={(open) => !open && setDetail(null)}>
+      <Dialog open={detail !== null} onOpenChange={(open) => !open && closeDetail()}>
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[560px]">
           {detail && (
             <>

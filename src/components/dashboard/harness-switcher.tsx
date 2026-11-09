@@ -59,7 +59,7 @@ export function HarnessSwitcher({
 
   return (
     <section className="panel mb-4 p-1.5" aria-label="Harness 筛选">
-      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5">
         {items.map((item) => {
           const Icon = icons[item.id];
           const source = sources.find((candidate) => candidate.harness === item.id);

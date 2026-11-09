@@ -13,6 +13,13 @@ import {
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { cn } from "@/lib/utils";
 import {
@@ -46,6 +53,81 @@ const navigation = [
   { id: "projects" as const, label: "项目统计", icon: FolderKanban },
   { id: "balance" as const, label: "余额查询", icon: Wallet },
 ];
+
+function NavigationList({
+  view,
+  collapsed = false,
+  onViewChange,
+}: Pick<SidebarProps, "view" | "onViewChange"> & { collapsed?: boolean }) {
+  return (
+    <nav className="space-y-1" aria-label="主导航">
+      {navigation.map((item) => {
+        const Icon = item.icon;
+        const active = view === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            title={collapsed ? item.label : undefined}
+            aria-current={active ? "page" : undefined}
+            onClick={() => onViewChange(item.id)}
+            className={cn(
+              "flex h-10 w-full items-center rounded-lg text-sm transition-colors",
+              collapsed ? "justify-center" : "gap-3 px-3",
+              active
+                ? "bg-secondary font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+            )}
+          >
+            <Icon className={cn("size-[17px]", active && "text-primary")} />
+            {!collapsed && <span>{item.label}</span>}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function MobileNavigation({
+  view,
+  onViewChange,
+  open,
+  onOpenChange,
+}: Pick<SidebarProps, "view" | "onViewChange"> & {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="inset-y-0 left-0 flex h-dvh max-h-none w-[280px] max-w-[calc(100%-3rem)] -translate-x-0 -translate-y-0 flex-col gap-0 rounded-none rounded-r-xl border-r border-border p-0 data-open:slide-in-from-left data-closed:slide-out-to-left sm:max-w-[280px]"
+        aria-label="移动端主导航"
+      >
+        <DialogHeader className="flex h-[72px] shrink-0 flex-row items-center gap-3 border-b border-border/70 px-5">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gradient-to-br from-amber-300 via-orange-400 to-rose-500 text-white">
+            <ChartColumn className="size-5" />
+          </div>
+          <div>
+            <DialogTitle className="text-[15px] tracking-[0.12em]">Y TOKEN</DialogTitle>
+            <DialogDescription className="mt-1 text-[11px]">AI Harness Monitor</DialogDescription>
+          </div>
+        </DialogHeader>
+        <div className="flex-1 overflow-y-auto p-3">
+          <div className="mb-2 px-3 text-[11px] font-medium tracking-wider text-muted-foreground/70">
+            工作台
+          </div>
+          <NavigationList
+            view={view}
+            onViewChange={(next) => {
+              onViewChange(next);
+              onOpenChange(false);
+            }}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function Sidebar({
   view,
@@ -85,31 +167,7 @@ export function Sidebar({
             工作台
           </div>
         )}
-        <nav className="space-y-1" aria-label="主导航">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            const active = view === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                title={collapsed ? item.label : undefined}
-                aria-current={active ? "page" : undefined}
-                onClick={() => onViewChange(item.id)}
-                className={cn(
-                  "flex h-10 w-full items-center rounded-lg text-sm transition-colors",
-                  collapsed ? "justify-center" : "gap-3 px-3",
-                  active
-                    ? "bg-secondary font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                )}
-              >
-                <Icon className={cn("size-[17px]", active && "text-primary")} />
-                {!collapsed && <span>{item.label}</span>}
-              </button>
-            );
-          })}
-        </nav>
+        <NavigationList view={view} collapsed={collapsed} onViewChange={onViewChange} />
       </div>
 
       <div className={cn("border-t border-border/70", collapsed ? "p-3" : "p-4")}>

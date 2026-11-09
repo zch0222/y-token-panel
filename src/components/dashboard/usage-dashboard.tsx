@@ -8,6 +8,7 @@ import {
   CircleHelp,
   Database,
   FilterX,
+  Menu,
   Moon,
   RefreshCw,
   Settings2,
@@ -32,7 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BalanceView } from "@/components/dashboard/balance-view";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
-import { Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
+import { MobileNavigation, Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
@@ -272,6 +273,7 @@ export function UsageDashboard() {
   const [tab, setTab] = useState<DetailTab>("models");
   const [viewName, setView] = useState<DashboardView>("overview");
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(60_000);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -360,8 +362,7 @@ export function UsageDashboard() {
     if (syncing) return "正在同步";
     if (!view && loading) return "首次导入中";
     if (refreshing) return "后台刷新中";
-    if (!view) return "同步数据";
-    return "刚刚同步";
+    return "同步数据";
   }, [view, loading, refreshing, syncing]);
 
   const exportCsv = () => {
@@ -386,8 +387,18 @@ export function UsageDashboard() {
 
       <main className="min-w-0 flex-1">
         <header className="flex h-[72px] items-center justify-between gap-4 border-b border-border/60 px-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gradient-to-br from-amber-300 via-orange-400 to-rose-500 text-white lg:hidden">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="打开主导航"
+              onClick={() => setMobileNavigationOpen(true)}
+              className="-ml-1 shrink-0 text-muted-foreground lg:hidden"
+            >
+              <Menu />
+            </Button>
+            <div className="hidden size-9 shrink-0 items-center justify-center rounded-[10px] bg-gradient-to-br from-amber-300 via-orange-400 to-rose-500 text-white sm:flex lg:hidden">
               <ChartColumn className="size-5" />
             </div>
             <div className="min-w-0">
@@ -402,6 +413,8 @@ export function UsageDashboard() {
               type="button"
               variant="outline"
               size="sm"
+              aria-label={syncLabel}
+              title={lastSyncedAt === null ? undefined : `上次同步 ${formatTime(lastSyncedAt)}`}
               disabled={syncing}
               onClick={refreshUsage}
               className="h-8 bg-card px-3 text-xs text-muted-foreground hover:text-foreground"
@@ -564,6 +577,16 @@ export function UsageDashboard() {
             </div>
           )}
 
+          {recordsSection.error && (
+            <div role="alert" className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <CircleAlert className="size-4 shrink-0" />
+              <span className="flex-1">{recordsSection.error}，请求日志可能不是最新数据。</span>
+              <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
+                重试
+              </Button>
+            </div>
+          )}
+
           {hasData && activeSources.some((source) => !source.sourceAvailable) && (
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-xs leading-5 text-amber-500">
               未找到 {activeSources.filter((source) => !source.sourceAvailable).map((source) => getHarnessLabel(source.harness)).join("、")} 的数据目录；其他 Harness 的统计不受影响。
@@ -713,6 +736,13 @@ export function UsageDashboard() {
           )}
         </div>
       </main>
+
+      <MobileNavigation
+        view={viewName}
+        onViewChange={changeView}
+        open={mobileNavigationOpen}
+        onOpenChange={setMobileNavigationOpen}
+      />
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[480px]">
