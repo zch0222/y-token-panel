@@ -135,7 +135,7 @@ Antigravity 数据源是其本地会话转录：
 - **原生供应商**：DeepSeek（多币种钱包）、StepFun、SiliconFlow（.cn 人民币 / .com 美元）、OpenRouter（剩余 = 总额度 − 已用）、Novita AI、智谱 / Z.ai（账户余额报表，Key 不带 Bearer）
 - **编程套餐（coding plan）**：按 5 小时 / 周 / 月窗口展示已用百分比、剩余额度与重置倒计时
   - **Kimi For Coding**（`api.kimi.com` / `api.kimi.ai`）：`GET /usages`，5 小时与周窗口绝对额度
-  - **GLM Coding Plan**（智谱个人版，国内 / 国际站）：`GET /api/monitor/usage/quota/limit`，Key 不带 Bearer；按量付费账户无套餐时自动回落查询账户余额
+  - **GLM Coding Plan**（智谱个人版，国内 / 国际站）：`GET /api/monitor/usage/quota/limit`，Key 不带 Bearer；有 `TIME_LIMIT` 时额外展示 MCP 每月调用额度（不是 Token 月限额），没有则不展示；按量付费账户无套餐时自动回落查询账户余额
   - **GLM Coding Plan 团队版**：同一额度接口加 `?type=2`，需 API Key + 组织 ID + 项目 ID
   - **MiniMax Coding Plan**（`api.minimaxi.com` / `api.minimax.io`）：`coding_plan/remains`，剩余百分比反转为已用，无周限额套餐自动隐藏周窗口
   - **火山方舟 Agent Plan / Coding Plan**：控制面 OpenAPI（`GetAFPUsage` → `GetCodingPlanUsage` 双 plan 自动探测），火山签名 V4；需填写火山引擎账号 AccessKey ID / Secret（与推理 API Key 是两套凭据）

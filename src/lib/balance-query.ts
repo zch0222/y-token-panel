@@ -61,6 +61,7 @@ const WINDOW_LABELS = {
   fiveHour: "5 小时窗口",
   weekly: "周窗口",
   monthly: "月窗口",
+  monthlyTools: "MCP 每月额度",
 } as const;
 
 /** 只有已用百分比的窗口（智谱 / MiniMax / OpenCode Go / 火山 Coding Plan）：以 0-100 呈现。 */
@@ -397,31 +398,60 @@ interface ZhipuTierEntry {
  * 1. unit 字段显式分类（3 = 5 小时窗，6 = 周窗）——周期末尾周窗比 5 小时窗更早重置，
  *    按重置时间排序必然标反（cc-switch issue #3036），必须锚定 unit；
  * 2. unit 缺失 / 不认识时兜底：无 nextResetTime 的优先归 5 小时窗，其余按重置升序填空位。
+ *
+ * TIME_LIMIT（unit:5）是月度 MCP / 搜索 / 阅读调用额度，独立展示；
+ * 没有该条目不伪造 0% 工具窗口，也不把它误当成 Token 月限额。
  */
-function parseZhipuTokenTiers(data: Record<string, unknown>): BalanceData[] {
+function parseZhipuQuotaRows(data: Record<string, unknown>): BalanceData[] {
   let fiveHour: ZhipuTierEntry | null = null;
   let weekly: ZhipuTierEntry | null = null;
+  let monthly: BalanceData | null = null;
   const unclassified: ZhipuTierEntry[] = [];
 
   if (Array.isArray(data.limits)) {
     for (const raw of data.limits) {
       const item = raw as Record<string, unknown>;
       const type = typeof item.type === "string" ? item.type : "";
+      const resetMs =
+        typeof item.nextResetTime === "number" && Number.isFinite(item.nextResetTime)
+          ? item.nextResetTime
+          : null;
+      const resetsAt = resetMs !== null ? new Date(resetMs).toISOString() : null;
+
+      // 上游返回月度 MCP / 搜索 / 阅读调用额度时才展示，不能冒充 Token 月限额。
+      if (/^time_limit$/i.test(type)) {
+        if (monthly !== null || item.unit !== 5) continue;
+        const total = parseNumberField(item, "usage");
+        const used = parseNumberField(item, "currentValue");
+        const remaining = parseNumberField(item, "remaining");
+        if (total !== null && total > 0 && (used !== null || remaining !== null)) {
+          monthly = {
+            planName: WINDOW_LABELS.monthlyTools,
+            remaining: remaining ?? Math.max(0, total - (used ?? 0)),
+            total,
+            used: used ?? Math.max(0, total - (remaining ?? 0)),
+            unit: "次",
+            resetsAt,
+            isValid: true,
+            invalidMessage: null,
+          };
+        } else {
+          const percentage =
+            typeof item.percentage === "number" && Number.isFinite(item.percentage)
+              ? item.percentage
+              : 0;
+          monthly = percentRow(WINDOW_LABELS.monthlyTools, percentage, resetsAt);
+        }
+        continue;
+      }
+
       // 大小写不敏感：上游改成小写 / 驼峰仍能识别
       if (!/^tokens_limit$/i.test(type) && !/^credit_limit$/i.test(type)) continue;
       const percentage =
         typeof item.percentage === "number" && Number.isFinite(item.percentage)
           ? item.percentage
           : 0;
-      const resetMs =
-        typeof item.nextResetTime === "number" && Number.isFinite(item.nextResetTime)
-          ? item.nextResetTime
-          : null;
-      const entry: ZhipuTierEntry = {
-        resetMs,
-        percentage,
-        resetsAt: resetMs !== null ? new Date(resetMs).toISOString() : null,
-      };
+      const entry: ZhipuTierEntry = { resetMs, percentage, resetsAt };
       const unit = item.unit;
       if (unit === 3 && fiveHour === null) fiveHour = entry;
       else if (unit === 6 && weekly === null) weekly = entry;
@@ -444,10 +474,11 @@ function parseZhipuTokenTiers(data: Record<string, unknown>): BalanceData[] {
   const rows: BalanceData[] = [];
   if (fiveHour) rows.push(percentRow(WINDOW_LABELS.fiveHour, fiveHour.percentage, fiveHour.resetsAt));
   if (weekly) rows.push(percentRow(WINDOW_LABELS.weekly, weekly.percentage, weekly.resetsAt));
+  if (monthly) rows.push(monthly);
   return rows;
 }
 
-/** 智谱 Coding Plan（个人版与团队版同 shape）：success:false 透出 msg；tier 由 unit/重置时间分类。 */
+/** 智谱 Coding Plan（个人版与团队版同 shape）：success:false 透出 msg；窗口由 unit/重置时间分类。 */
 export function parseZhipuCodingBalance(body: unknown): BalanceResult {
   const obj = body as Record<string, unknown> | null;
   if (obj?.success === false) {
@@ -459,7 +490,7 @@ export function parseZhipuCodingBalance(body: unknown): BalanceResult {
       ? (obj.data as Record<string, unknown>)
       : null;
   if (!data) return deterministicError("Missing 'data' field in response");
-  const rows = parseZhipuTokenTiers(data);
+  const rows = parseZhipuQuotaRows(data);
   if (rows.length === 0) {
     return deterministicError("Zhipu coding plan response has no TOKENS_LIMIT entries");
   }

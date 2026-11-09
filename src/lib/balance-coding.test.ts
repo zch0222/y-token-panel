@@ -104,12 +104,11 @@ describe("parseZhipuCodingBalance", () => {
     data: { limits, ...(level ? { level } : {}) },
   });
 
-  it("新套餐两条 TOKENS_LIMIT：无 unit 时按重置时间升序归 five_hour / weekly", () => {
+  it("新套餐两条 TOKENS_LIMIT：无 unit 时按重置时间升序归 five_hour / weekly，不展示月额度", () => {
     const result = parseZhipuCodingBalance(
       planBody([
         { type: "TOKENS_LIMIT", percentage: 53.0, nextResetTime: 2_000_000_000_000 },
         { type: "TOKENS_LIMIT", percentage: 44.0, nextResetTime: 1_000_000_000_000 },
-        { type: "TIME_LIMIT", percentage: 7.0 },
       ]),
     );
     expect(result.success).toBe(true);
@@ -121,14 +120,51 @@ describe("parseZhipuCodingBalance", () => {
     expect(rows[0].remaining).toBe(56);
     expect(rows[1].planName).toBe("周窗口");
     expect(rows[1].used).toBe(53);
+    expect(rows.some((row) => row.planName === "月窗口")).toBe(false);
   });
 
-  it("老套餐只有一条 TOKENS_LIMIT，自然降级为仅 5 小时窗口", () => {
+  it("有 TIME_LIMIT 时展示 MCP 每月调用次数与重置时间", () => {
     const result = parseZhipuCodingBalance(
-      planBody([{ type: "TOKENS_LIMIT", percentage: 2.0, nextResetTime: 1_774_967_594_803 }]),
+      planBody([
+        { type: "TOKENS_LIMIT", percentage: 2.0, nextResetTime: 1_774_967_594_803 },
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 250,
+          remaining: 750,
+          percentage: 25,
+          nextResetTime: 2_000_000_000_000,
+        },
+      ]),
     );
-    expect(result.data).toHaveLength(1);
+    expect(result.data).toHaveLength(2);
     expect(result.data![0].planName).toBe("5 小时窗口");
+    expect(result.data![1]).toMatchObject({
+      planName: "MCP 每月额度",
+      remaining: 750,
+      total: 1000,
+      used: 250,
+      unit: "次",
+      resetsAt: new Date(2_000_000_000_000).toISOString(),
+    });
+  });
+
+  it("MCP 每月额度缺少次数字段时按百分比展示", () => {
+    const result = parseZhipuCodingBalance(
+      planBody([
+        { type: "TOKENS_LIMIT", percentage: 2.0 },
+        { type: "TIME_LIMIT", unit: 5, percentage: 40 },
+      ]),
+    );
+    expect(result.data![1]).toMatchObject({
+      planName: "MCP 每月额度",
+      remaining: 60,
+      total: 100,
+      used: 40,
+      unit: "%",
+    });
   });
 
   it("unit 字段优先于重置时间排序（issue #3036：周期末尾周窗先重置）", () => {

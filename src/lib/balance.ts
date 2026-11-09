@@ -127,7 +127,7 @@ export const BALANCE_KIND_OPTIONS: {
   { value: "novita", label: "Novita AI", hint: "GET /v3/user/balance" },
   { value: "zhipu", label: "智谱 / Z.ai", hint: "账户余额报表接口，Key 不带 Bearer" },
   { value: "kimi", label: "Kimi For Coding", hint: "GET {coding 根地址}/usages，5 小时与周窗口额度" },
-  { value: "zhipu_coding", label: "GLM Coding Plan", hint: "GET /api/monitor/usage/quota/limit，5 小时与周窗口已用百分比" },
+  { value: "zhipu_coding", label: "GLM Coding Plan", hint: "GET /api/monitor/usage/quota/limit，5 小时与周窗口；有 TIME_LIMIT 时另展示 MCP 每月调用额度" },
   { value: "zhipu_team", label: "GLM Coding Plan 团队版", hint: "额度接口加 ?type=2，需组织 ID 与项目 ID" },
   { value: "minimax", label: "MiniMax Coding Plan", hint: "GET /v1/api/openplatform/coding_plan/remains，剩余百分比反转" },
   { value: "volcengine", label: "火山方舟套餐", hint: "控制面 OpenAPI（GetAFPUsage / GetCodingPlanUsage），需 AccessKey 签名" },
