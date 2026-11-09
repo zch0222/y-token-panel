@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111214" />
+    <title>Y Token · 当前离线</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: #eceef1;
+        background: #111214;
+        font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      main { width: min(100%, 420px); text-align: center; }
+      img {
+        width: 72px;
+        height: 72px;
+        border-radius: 18px;
+        box-shadow: 0 14px 40px rgb(244 63 94 / 18%);
+      }
+      h1 { margin: 24px 0 10px; font-size: 24px; letter-spacing: -.02em; }
+      p { margin: 0; color: #9299a3; font-size: 14px; line-height: 1.8; }
+      button {
+        margin-top: 26px;
+        min-height: 40px;
+        padding: 0 20px;
+        border: 1px solid #34373d;
+        border-radius: 10px;
+        color: #eceef1;
+        background: #292c30;
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:hover { background: #34373d; }
+      button:focus-visible { outline: 3px solid rgb(53 184 239 / 45%); outline-offset: 3px; }
+      .note { margin-top: 18px; font-size: 12px; color: #747d89; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon-192.png" alt="Y Token" />
+      <h1>当前处于离线状态</h1>
+      <p>无法连接 Y Token 服务。请检查网络或本地服务是否正在运行，然后重新连接。</p>
+      <button type="button" onclick="location.reload()">重新连接</button>
+      <p class="note">为保护本地数据，用量记录与余额信息不会离线缓存。</p>
+    </main>
+  </body>
+</html>

@@ -34,6 +34,7 @@ import { BalanceView } from "@/components/dashboard/balance-view";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { MobileNavigation, Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
+import { InstallAppButton } from "@/components/pwa/install-app-button";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
@@ -409,6 +410,7 @@ export function UsageDashboard() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            <InstallAppButton />
             <Button
               type="button"
               variant="outline"
