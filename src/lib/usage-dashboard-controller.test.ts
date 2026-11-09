@@ -143,12 +143,12 @@ function syncPayload(revision: number, changed = false): UsageSyncResult {
   };
 }
 
-function recordsPayload(page: number, total = 30): UsageRecordsPage {
+function recordsPayload(page: number, total = 30, pageSize = 10): UsageRecordsPage {
   return {
     revision: 1,
     total,
     page,
-    pageSize: 10,
+    pageSize,
     records: [],
   };
 }
@@ -345,6 +345,44 @@ describe("UsageDashboardController", () => {
     await flushPromises();
     expect(controller.getPage()).toBe(0);
     expect(fetchRecords).toHaveBeenLastCalledWith(SEVEN_DAYS, 0, 10);
+    controller.stop();
+  });
+
+  it("切换页大小重置到第一页并按新页大小查询", async () => {
+    const env = createEnvironment();
+    const fetchView = vi.fn(async () => viewPayload(1));
+    const fetchRecords = vi.fn(
+      async (_filters: UsageQueryFilters, page: number, pageSize: number) =>
+        recordsPayload(page, 100, pageSize),
+    );
+    const controller = new UsageDashboardController({
+      fetchView,
+      fetchRecords,
+      syncUsage: async () => syncPayload(1),
+      environment: env.environment,
+      minuteInvalidationMs: Number.MAX_SAFE_INTEGER,
+    });
+    controller.start();
+    await flushPromises();
+
+    controller.setPage(2);
+    await flushPromises();
+    expect(fetchRecords).toHaveBeenLastCalledWith(DEFAULT_USAGE_FILTERS, 2, 10);
+
+    controller.setPageSize(20);
+    await flushPromises();
+    expect(controller.getPage()).toBe(0);
+    expect(controller.getPageSize()).toBe(20);
+    expect(fetchRecords).toHaveBeenLastCalledWith(DEFAULT_USAGE_FILTERS, 0, 20);
+    expect(controller.getState().records).toMatchObject({
+      data: { page: 0, pageSize: 20 },
+      loading: false,
+      updating: false,
+    });
+
+    const requestCount = fetchRecords.mock.calls.length;
+    controller.setPageSize(20);
+    expect(fetchRecords).toHaveBeenCalledTimes(requestCount);
     controller.stop();
   });
 

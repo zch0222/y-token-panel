@@ -21,6 +21,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -55,7 +62,9 @@ interface UsageTablesProps {
   records: UsageRecordsPage | null;
   recordsLoading: boolean;
   page: number;
+  pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   tab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   filteredCount: number;
@@ -65,6 +74,7 @@ interface UsageTablesProps {
 
 const headClass = "h-11 border-border/70 px-4 text-xs font-normal text-muted-foreground";
 const cellClass = "border-border/70 px-4 py-3.5 text-[13px] tabular-nums";
+const RECORDS_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 const providerColors: Record<string, string> = {
   DeepSeek: "bg-blue-500/15 text-blue-400",
@@ -251,6 +261,7 @@ function RequestTable({
   page,
   pageSize,
   onPageChange,
+  onPageSizeChange,
   onSelect,
 }: {
   records: UsageRecord[];
@@ -258,6 +269,7 @@ function RequestTable({
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onSelect: (record: UsageRecord) => void;
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
@@ -363,30 +375,49 @@ function RequestTable({
       </Table>
       <div className="flex h-14 items-center justify-between border-t border-border/70 px-5 text-xs text-muted-foreground">
         <span>共 {total.toLocaleString("zh-CN")} 条请求</span>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="上一页"
-            disabled={page === 0}
-            onClick={() => onPageChange(Math.max(0, page - 1))}
+        <div className="flex items-center gap-4">
+          <Select
+            value={String(pageSize)}
+            onValueChange={(value) => {
+              if (value !== null) onPageSizeChange(Number(value));
+            }}
           >
-            <ChevronLeft />
-          </Button>
-          <span className="min-w-16 text-center tabular-nums">
-            {page + 1} / {pageCount}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="下一页"
-            disabled={page >= pageCount - 1}
-            onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
-          >
-            <ChevronRight />
-          </Button>
+            <SelectTrigger size="sm" className="border-border/70 text-xs" aria-label="每页条数">
+              <SelectValue>{`${pageSize} 条/页`}</SelectValue>
+            </SelectTrigger>
+            <SelectContent side="top" align="end">
+              {RECORDS_PAGE_SIZE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={String(option)} className="text-xs">
+                  {option} 条/页
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="上一页"
+              disabled={page === 0}
+              onClick={() => onPageChange(Math.max(0, page - 1))}
+            >
+              <ChevronLeft />
+            </Button>
+            <span className="min-w-16 text-center tabular-nums">
+              {page + 1} / {pageCount}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="下一页"
+              disabled={page >= pageCount - 1}
+              onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -407,7 +438,9 @@ export function UsageTables({
   records,
   recordsLoading,
   page,
+  pageSize,
   onPageChange,
+  onPageSizeChange,
   tab,
   onTabChange,
   filteredCount,
@@ -500,8 +533,9 @@ export function UsageTables({
           records={records?.records ?? []}
           total={records?.total ?? 0}
           page={page}
-          pageSize={records?.pageSize ?? 10}
+          pageSize={pageSize}
           onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
           onSelect={selectRecord}
         />
       )}

@@ -81,7 +81,7 @@ function queryError(error: unknown): string {
 export class UsageDashboardController {
   private readonly deps: UsageDashboardDeps;
   private readonly environment: UsageDashboardEnvironment;
-  private readonly pageSize: number;
+  private pageSize: number;
   private readonly minuteInvalidationMs: number;
   private readonly syncLoop: UsageRefreshController<UsageSyncResult>;
 
@@ -120,6 +120,8 @@ export class UsageDashboardController {
   getFilters = (): UsageQueryFilters => this.filters;
 
   getPage = (): number => this.page;
+
+  getPageSize = (): number => this.pageSize;
 
   subscribe = (listener: (state: UsageDashboardState) => void): (() => void) => {
     this.listeners.add(listener);
@@ -172,6 +174,14 @@ export class UsageDashboardController {
     const next = Math.max(0, Math.floor(page));
     if (next === this.page) return;
     this.page = next;
+    this.fetchRecords();
+  };
+
+  setPageSize = (pageSize: number): void => {
+    const next = Math.max(1, Math.floor(pageSize));
+    if (next === this.pageSize) return;
+    this.pageSize = next;
+    this.page = 0;
     this.fetchRecords();
   };
 

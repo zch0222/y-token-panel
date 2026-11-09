@@ -677,7 +677,9 @@ export function UsageDashboard() {
               records={recordsSection.data}
               recordsLoading={recordsSection.loading || recordsSection.updating}
               page={controller.getPage()}
+              pageSize={controller.getPageSize()}
               onPageChange={(page) => controller.setPage(page)}
+              onPageSizeChange={(pageSize) => controller.setPageSize(pageSize)}
               tab={tab}
               onTabChange={setTab}
               filteredCount={filteredCount}
