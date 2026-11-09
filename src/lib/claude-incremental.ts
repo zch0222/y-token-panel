@@ -1,5 +1,5 @@
 import "server-only";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { claudeSource } from "@/lib/claude";
 import {
@@ -190,7 +190,10 @@ async function importWholeFile(
   seen: Set<string>,
   stats: IncrementalStats,
 ): Promise<{ records: UsageRecord[]; cursor: UsageSessionLogState }> {
-  const buffer = await readFile(file.filePath);
+  // discovery 的 size/mtime 是本轮游标元数据基准。只读该尺寸内的旧前缀，
+  // 避免 stat 后 writer 追加内容使 cursorOffset 超过已记录的 fileSize；
+  // 新追加部分会在下一轮按变化后的元数据续读。
+  const buffer = await readRange(file.filePath, 0, file.size);
   stats.bodyBytesRead += buffer.length;
   stats.fullFilesRead += 1;
   // 只提交到最后一个完整 LF 行；尾部半行（writer 未写完）留到下一轮补齐。

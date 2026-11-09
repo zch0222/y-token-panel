@@ -1,7 +1,12 @@
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 import { readClaudeUsage } from "@/lib/claude";
 import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
@@ -185,6 +190,52 @@ describe("Claude 持久化字节游标增量导入", () => {
     expect(store.getDedupKeys("claude").sort()).toEqual(["claude:msg_a", "claude:msg_sub"]);
     // 耗时沿父链估算成功（起点 u1，终点最晚块）。
     expect(imported.usage.records.find((r) => r.id === "claude:msg_a")?.estimatedDurationMs).toBe(4000);
+  });
+
+  it("全量导入 stat 后文件继续追加：游标保持一致，追加内容下一轮补入", async () => {
+    const directory = await projectDir();
+    const filePath = path.join(directory, "session-a.jsonl");
+    const initial = jsonl(
+      userLine("u1", BASE_MS),
+      line({
+        uuid: "b0",
+        parentUuid: "u1",
+        timestamp: BASE_MS + 1000,
+        messageId: "msg_a",
+        stopReason: "end_turn",
+      }),
+    );
+    const appended = line({
+      uuid: "c0",
+      parentUuid: "b0",
+      timestamp: BASE_MS + 2000,
+      messageId: "msg_b",
+      stopReason: "end_turn",
+    }) + "\n";
+    await writeFile(filePath, initial);
+
+    const actualStat = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).stat;
+    vi.mocked(stat).mockImplementationOnce(async (target) => {
+      const metadata = await actualStat(target);
+      // 模拟活跃 Claude writer：发现文件大小后、读取正文前追加完整一行。
+      await appendFile(filePath, appended);
+      return metadata;
+    });
+
+    const first = await sync();
+    expect(first.usage.records.map((record) => record.id)).toEqual(["claude:msg_a"]);
+    expect(store.getSessionLogStates("claude")[0]).toMatchObject({
+      fileSize: Buffer.byteLength(initial),
+      cursorOffset: Buffer.byteLength(initial),
+    });
+
+    const second = await sync();
+    expect(second.usage.records.map((record) => record.id)).toEqual(["claude:msg_b", "claude:msg_a"]);
+    expect(store.getSessionLogStates("claude")[0]).toMatchObject({
+      fileSize: Buffer.byteLength(initial + appended),
+      cursorOffset: Buffer.byteLength(initial + appended),
+    });
+    expect(second.usage).toEqual(await readClaudeUsage());
   });
 
   it("未变化零正文读取；追加块补齐 stop_reason 与耗时并只读新增字节", async () => {
