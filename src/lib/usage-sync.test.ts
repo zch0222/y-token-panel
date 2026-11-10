@@ -26,6 +26,7 @@ function stubDataDirectories(): void {
     "CODEX_HOME",
     "DSH_HOME",
     "ANTIGRAVITY_DATA_DIR",
+    "PI_DESKTOP_DATA_DIR",
   ];
   for (const variable of variables) {
     vi.stubEnv(variable, path.join(root, "missing", variable));

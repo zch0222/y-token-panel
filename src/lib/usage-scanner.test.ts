@@ -10,6 +10,7 @@ import { readQoderUsageIncremental } from "@/lib/qoder-incremental";
 import {
   readCodeBuddyUsageIncremental,
   readKcodeUsageIncremental,
+  readPiDesktopUsageIncremental,
   readWorkBuddyUsageIncremental,
 } from "@/lib/wholefile-incremental";
 import { readZcodeUsage } from "@/lib/zcode";
@@ -22,6 +23,7 @@ vi.mock("@/lib/codebuddy", () => ({ readCodeBuddyUsage: vi.fn() }));
 vi.mock("@/lib/codex", () => ({ readCodexUsage: vi.fn() }));
 vi.mock("@/lib/dsh", () => ({ readDshUsage: vi.fn() }));
 vi.mock("@/lib/kcode", () => ({ readKcodeUsage: vi.fn() }));
+vi.mock("@/lib/pi-desktop", () => ({ readPiDesktopUsage: vi.fn() }));
 vi.mock("@/lib/qoder", () => ({ readQoderUsage: vi.fn() }));
 vi.mock("@/lib/workbuddy", () => ({ readWorkBuddyUsage: vi.fn() }));
 vi.mock("@/lib/zcode", () => ({ readZcodeUsage: vi.fn() }));
@@ -32,6 +34,7 @@ vi.mock("@/lib/qoder-incremental", () => ({ readQoderUsageIncremental: vi.fn() }
 vi.mock("@/lib/wholefile-incremental", () => ({
   readCodeBuddyUsageIncremental: vi.fn(),
   readKcodeUsageIncremental: vi.fn(),
+  readPiDesktopUsageIncremental: vi.fn(),
   readWorkBuddyUsageIncremental: vi.fn(),
 }));
 
@@ -46,6 +49,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     codex: vi.fn(),
     dsh: vi.fn(),
     antigravity: vi.fn(),
+    pidesktop: vi.fn(),
   };
   const zcodeReader = vi.fn<UsageReader>();
 
@@ -113,6 +117,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     vi.mocked(readCodexUsageIncremental).mockImplementation(incrementals.codex);
     vi.mocked(readDshUsageIncremental).mockImplementation(incrementals.dsh);
     vi.mocked(readAntigravityUsageIncremental).mockImplementation(incrementals.antigravity);
+    vi.mocked(readPiDesktopUsageIncremental).mockImplementation(incrementals.pidesktop);
     vi.mocked(readQoderUsageIncremental).mockImplementation(incrementals.qoder);
     vi.mocked(readCodeBuddyUsageIncremental).mockImplementation(incrementals.codebuddy);
     vi.mocked(readKcodeUsageIncremental).mockImplementation(incrementals.kcode);
@@ -175,7 +180,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
       "codex-2",
     ]);
     // 失败来源不提交增量事务（游标保持）。
-    expect(second.incrementals).toHaveLength(7);
+    expect(second.incrementals).toHaveLength(8);
     expect(second.incrementals.map((item) => item.harness)).not.toContain("claude");
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("claude"),
@@ -189,7 +194,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     const result = await scanUsageForStorage(store);
     const harnesses = result.usage.sources.map((source) => source.harness);
     expect(harnesses).not.toContain("dsh");
-    expect(harnesses).toHaveLength(8);
+    expect(harnesses).toHaveLength(9);
     await commitRound(result);
     expect(store.readNormalizedRecords("dsh")).toHaveLength(0);
   });

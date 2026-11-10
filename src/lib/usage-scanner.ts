@@ -8,12 +8,14 @@ import { readCodexUsageIncremental } from "@/lib/codex-incremental";
 import { readDshUsage } from "@/lib/dsh";
 import { readDshUsageIncremental } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
+import { readPiDesktopUsage } from "@/lib/pi-desktop";
 import { readQoderUsage } from "@/lib/qoder";
 import { readQoderUsageIncremental } from "@/lib/qoder-incremental";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
 import {
   readCodeBuddyUsageIncremental,
   readKcodeUsageIncremental,
+  readPiDesktopUsageIncremental,
   readWorkBuddyUsageIncremental,
 } from "@/lib/wholefile-incremental";
 import { readZcodeUsage } from "@/lib/zcode";
@@ -51,6 +53,7 @@ const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
   { harness: "codex", read: readCodexUsage },
   { harness: "dsh", read: readDshUsage },
   { harness: "antigravity", read: readAntigravityUsage },
+  { harness: "pidesktop", read: readPiDesktopUsage },
 ];
 
 /** worker 专用：全量 reader 之外的持久游标增量路径（与全量 reader 同一解析体）。 */
@@ -70,6 +73,11 @@ const incrementalReaders: Array<{
     harness: "antigravity",
     read: readAntigravityUsage,
     incremental: readAntigravityUsageIncremental,
+  },
+  {
+    harness: "pidesktop",
+    read: readPiDesktopUsage,
+    incremental: readPiDesktopUsageIncremental,
   },
 ];
 

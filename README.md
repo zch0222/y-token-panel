@@ -104,6 +104,14 @@ Antigravity 数据源是其本地会话转录：
 
 可以通过 **ANTIGRAVITY_DATA_DIR** 指定另一个数据根目录（其下需有 `brain` 与 `conversation_summaries.db`）。字段语义按本机 Antigravity IDE 的 `resources/bin/language_server.exe` 与 `conversations/<id>.db` 反查确认：每行一个 step，只有 `PLANNER_RESPONSE` 与 `CHECKPOINT`（上下文压缩请求）带 `input_tokens` / `cache_read_tokens` / `output_tokens`；`input_tokens` 是不含缓存的新鲜输入（实测同一响应 input 24011、cache 117055，input 含缓存不可能成立），`output_tokens` 已包含思考（数据库里 thinking 289 + response 125 = output 414），转录里没有缓存写入与 Credits 字段；`PLANNER_RESPONSE` 的耗时取自 `conversations/<id>.db` 的首字等待 + 流式 Duration（`steps.metadata` 的 generation 索引 → `gen_metadata` 字段 11/12），`CHECKPOINT` 的原生引用指向下一条生成，不计耗时。只导入状态为 `DONE` 且用量非零的响应，按会话 ID + step 索引去重。转录没有模型字段，模型按会话内 `Model Selection` 切换事件继承，缺失时记为「未知模型」；项目名取自 `conversation_summaries.db` 的工作区 URI。
 
+Pi Desktop（vastsa/PI-Desktop 桌面编码助手）数据源是其本地会话转录：
+
+~~~text
+~/.pi-desktop/sessions/<会话 uuid>.jsonl
+~~~
+
+可以通过 **PI_DESKTOP_DATA_DIR**（与 PI-Desktop 自身的环境变量一致）指定另一个数据根目录（其下需有 `sessions`）；未设置时跟随应用内存储位置设置（Electron userData 下的 `storage-location.json`，损坏或缺失时静默回退默认根；`PI_DESKTOP_DEV=1` 的开发安装为 `~/.pi-desktop-dev`）。字段语义按本机 PI-Desktop 0.22.0 的代码反查确认（app.asar 主进程 `usageFromPi` 归一化、host-core 的 transcript 写入口径）：用量只出现在 `role:"assistant"` 消息的 `meta.usage`，`inputTokens` 不含缓存读写（新鲜输入口径），`reasoningTokens` 是 output 子集不另行累计，`totalTokens` 为上游报告值（权威，缺失回退四项求和）；`operationId` 是单次模型请求的稳定标识，消息编辑重写后不变，按其去重（无则回退消息 id / 文件行号）；`cost` 为绝对美元，仅 `costStatus="reported"`（供应商计费）时计入 Credits，`"estimated"` 本地估算不计费、以报告值单独显示；`responseDurationMs` 为应用精确计时。失败（`status=error/aborted`）请求通常无 usage，仍按零 token 计入请求数与成功率。`*.revisions.jsonl`（消息编辑历史）与 `*.inflight.json`（流式中转瞬态）不是转录，不纳入扫描；消息编辑 / 删除 / 截断会原子重写主文件，增量按整文件重读引擎处理（未变化文件零读取）。`meta.providerId` 是应用内部行 UUID，供应商按模型名推断；转录不含项目信息（仅存于 pi.sqlite），项目维度记为「未知项目」。
+
 ## 本地用量快照与同步
 
 用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。

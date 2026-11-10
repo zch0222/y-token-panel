@@ -7,6 +7,8 @@ import type { UsageResponse } from "@/lib/usage";
 import { UsageStore } from "@/lib/usage-store";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodeBuddyUsageIncremental } from "@/lib/wholefile-incremental";
+import { readPiDesktopUsage } from "@/lib/pi-desktop";
+import { readPiDesktopUsageIncremental } from "@/lib/wholefile-incremental";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
 import { readWorkBuddyUsageIncremental } from "@/lib/wholefile-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
@@ -433,6 +435,156 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
       const disappeared = await sync(readKcodeUsageIncremental);
       expect(disappeared.stats.rebuilds).toBe(1);
       expect(disappeared.usage.records[0]?.project).toBe("demo");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // PI-Desktop
+  // -----------------------------------------------------------------------
+
+  describe("Pi Desktop", () => {
+    const sessionId = "82f94c45-6278-4c5b-a786-a7598cb78c3e";
+
+    beforeEach(() => {
+      stubEnv("PI_DESKTOP_DATA_DIR", path.join(root, "pi-desktop"));
+    });
+
+    /** 真实形态的 assistant 记录（见 pi-desktop-session.test.ts 工厂说明）。 */
+    function piLine(
+      operationId: string,
+      at: number,
+      overrides: { input?: number; output?: number; total?: number } = {},
+    ): string {
+      return JSON.stringify({
+        type: "message",
+        id: `${operationId}-message`,
+        role: "assistant",
+        createdAt: new Date(BASE_MS + at).toISOString(),
+        blocks: [{ type: "text", text: "ok" }],
+        meta: {
+          modelId: "kimi-k3-1-pro-261024",
+          providerId: "f39b8d71-e8ae-494c-b635-1088342678d4",
+          responseDurationMs: 2908,
+          responseModelId: "kimi-k3-1-pro-261024",
+          status: "complete",
+          usage: {
+            aggregation: "operation",
+            cacheReadTokens: 512,
+            costStatus: "unknown",
+            inputTokens: overrides.input ?? 8529,
+            operationId,
+            outputTokens: overrides.output ?? 353,
+            reasoningTokens: 195,
+            totalTokens: overrides.total ?? 9394,
+            usageOrigin: "pi",
+          },
+        },
+      });
+    }
+
+    function piFile(...lines: string[]): string {
+      const header = JSON.stringify({
+        type: "session",
+        createdAt: new Date(BASE_MS).toISOString(),
+        schema: 2,
+        sessionId,
+      });
+      return lines.length > 0 ? `${header}\n${lines.join("\n")}\n` : `${header}\n`;
+    }
+
+    async function sessionsDir(): Promise<string> {
+      const directory = path.join(root, "pi-desktop", "sessions");
+      await mkdir(directory, { recursive: true });
+      return directory;
+    }
+
+    it("冷导入与全量 reader 一致；未变化零读取；追加只重读变化文件", async () => {
+      const directory = await sessionsDir();
+      const filePath = path.join(directory, `${sessionId}.jsonl`);
+      await writeFile(filePath, piFile(piLine("op-0001", 0), piLine("op-0002", 4000)));
+      const baseline = await readPiDesktopUsage();
+      const imported = await sync(readPiDesktopUsageIncremental);
+      expect(imported.usage).toEqual(baseline);
+      expect(imported.stats.rebuilds).toBe(1);
+      expect(store.getSessionLogStates("pidesktop")).toHaveLength(1);
+
+      const unchanged = await sync(readPiDesktopUsageIncremental);
+      expect(unchanged.stats).toMatchObject({
+        bodyBytesRead: 0,
+        verificationBytesRead: 0,
+        unchangedFiles: 1,
+        incrementalFilesRead: 0,
+      });
+
+      await appendFile(filePath, `${piLine("op-0003", 9000)}\n`);
+      const incremental = await sync(readPiDesktopUsageIncremental);
+      expect(incremental.stats).toMatchObject({ incrementalFilesRead: 1, rebuilds: 0 });
+      expect(incremental.usage.records).toHaveLength(3);
+      const afterAppend = await readPiDesktopUsage();
+      expect(incremental.usage.records).toEqual(afterAppend.records);
+    });
+
+    it("消息编辑重写主文件后按 operationId 替换旧记录，不重复计数", async () => {
+      const directory = await sessionsDir();
+      const filePath = path.join(directory, `${sessionId}.jsonl`);
+      await writeFile(filePath, piFile(piLine("op-0001", 0)));
+      await sync(readPiDesktopUsageIncremental);
+      expect(store.readNormalizedRecords("pidesktop")).toHaveLength(1);
+
+      // replaceMessages 原子重写：既有请求数值被改写（operationId 不变），并追加新请求。
+      await writeFile(
+        filePath,
+        piFile(piLine("op-0001", 0, { input: 4321, total: 5186 }), piLine("op-0002", 4000)),
+      );
+      const rewritten = await sync(readPiDesktopUsageIncremental);
+      expect(rewritten.usage.records).toHaveLength(2);
+      expect(
+        rewritten.usage.records.find((record) => record.requestId === "op-0001"),
+      ).toMatchObject({ inputTokens: 4321, totalTokens: 5186 });
+      const baseline = await readPiDesktopUsage();
+      expect(rewritten.usage.records).toEqual(baseline.records);
+    });
+
+    it("revisions / inflight 伴随文件不纳入扫描，不重复计数", async () => {
+      const directory = await sessionsDir();
+      await writeFile(path.join(directory, `${sessionId}.jsonl`), piFile(piLine("op-0001", 0)));
+      // revisions 快照里带同 operationId 的完整消息，读入会造成双计。
+      await writeFile(
+        path.join(directory, `${sessionId}.revisions.jsonl`),
+        [
+          JSON.stringify({ type: "storage", schema: 2 }),
+          JSON.stringify({ type: "revision", createdAt: new Date(BASE_MS).toISOString(), messages: [JSON.parse(piLine("op-0001", 0))] }),
+        ].join("\n") + "\n",
+      );
+      await writeFile(
+        path.join(directory, `${sessionId}.inflight.json`),
+        JSON.stringify({ type: "message", role: "assistant" }),
+      );
+      const imported = await sync(readPiDesktopUsageIncremental);
+      expect(imported.usage.records).toHaveLength(1);
+      expect(imported.usage.scannedFiles).toBe(1);
+
+      const unchanged = await sync(readPiDesktopUsageIncremental);
+      expect(unchanged.stats.unchangedFiles).toBe(1);
+    });
+
+    it("新增与删除会话文件触发来源级重建", async () => {
+      const directory = await sessionsDir();
+      const fileA = path.join(directory, "aaaaaaaa-0000-0000-0000-000000000001.jsonl");
+      await writeFile(fileA, piFile(piLine("op-0001", 0)));
+      await sync(readPiDesktopUsageIncremental);
+
+      const fileB = path.join(directory, "bbbbbbbb-0000-0000-0000-000000000002.jsonl");
+      await writeFile(fileB, piFile(piLine("op-0002", 4000)));
+      const grown = await sync(readPiDesktopUsageIncremental);
+      expect(grown.stats.rebuilds).toBe(1);
+      expect(grown.usage.records).toHaveLength(2);
+
+      await rm(fileA);
+      const shrunk = await sync(readPiDesktopUsageIncremental);
+      expect(shrunk.stats.rebuilds).toBe(1);
+      expect(shrunk.usage.records).toHaveLength(1);
+      expect(shrunk.usage.records[0]?.requestId).toBe("op-0002");
     });
   });
 });

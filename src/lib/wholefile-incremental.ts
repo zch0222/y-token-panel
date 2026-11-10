@@ -19,6 +19,8 @@ import {
 import { codeBuddySource } from "@/lib/codebuddy";
 import { parseSessionFile } from "@/lib/codebuddy-session";
 import { readdir } from "node:fs/promises";
+import { isPiDesktopTranscriptFile, resolvePiDesktopSessionsDir } from "@/lib/pi-desktop";
+import { parsePiDesktopSession } from "@/lib/pi-desktop-session";
 import { kcodeRoot } from "@/lib/kcode";
 import {
   parseKcodeProjectsFile,
@@ -576,5 +578,54 @@ export function readKcodeUsageIncremental(store: UsageStore): Promise<Incrementa
     harness: "kcode",
     discover: discoverKcodeFiles,
     parseFile: (file, content) => parseKcodeWireFile(content, file.context),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PI-Desktop
+// ---------------------------------------------------------------------------
+
+interface PiDesktopFile extends IncrementalFileBase {
+  name: string;
+}
+
+async function discoverPiDesktopFiles(): Promise<WholeFileDiscovery<PiDesktopFile>> {
+  const source = await resolvePiDesktopSessionsDir();
+  const files: PiDesktopFile[] = [];
+  let scannedFiles = 0;
+  let skippedFiles = 0;
+
+  let entries;
+  try {
+    entries = await readdir(source, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { source, files, scannedFiles, skippedFiles, auxiliaries: [] };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !isPiDesktopTranscriptFile(entry.name)) continue;
+    scannedFiles += 1;
+    const filePath = path.join(source, entry.name);
+    try {
+      const metadata = await stat(filePath);
+      files.push({
+        filePath,
+        name: entry.name,
+        size: metadata.size,
+        mtimeMs: metadata.mtimeMs,
+      });
+    } catch {
+      skippedFiles += 1;
+    }
+  }
+  return { source, files, scannedFiles, skippedFiles, auxiliaries: [] };
+}
+
+export function readPiDesktopUsageIncremental(store: UsageStore): Promise<IncrementalUsageResult> {
+  return readWholeFileUsageIncremental(store, {
+    harness: "pidesktop",
+    discover: discoverPiDesktopFiles,
+    parseFile: (file, content) => parsePiDesktopSession(content, file.name),
   });
 }

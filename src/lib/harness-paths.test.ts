@@ -8,6 +8,7 @@ import { codeBuddySource } from "@/lib/codebuddy";
 import { codexRoot } from "@/lib/codex";
 import { dshSource } from "@/lib/dsh";
 import { kcodeRoot } from "@/lib/kcode";
+import { resolvePiDesktopSessionsDir } from "@/lib/pi-desktop";
 import { qoderSource } from "@/lib/qoder";
 import { workBuddySource } from "@/lib/workbuddy";
 import { resolveZcodeDatabasePath } from "@/lib/zcode";
@@ -30,6 +31,8 @@ const ENV_KEYS = [
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
   "ANTIGRAVITY_DATA_DIR",
+  "PI_DESKTOP_DATA_DIR",
+  "PI_DESKTOP_DEV",
 ] as const;
 const original = new Map<string, string | undefined>();
 const temporaryRoots: string[] = [];
@@ -202,5 +205,63 @@ describe("Harness 配置路径与本机实现一致", () => {
     await expect(resolveZcodeDatabasePath({ homeDir: home, env: {} })).resolves.toBe(
       path.join(home, ".zcode", "cli", "db", "db.sqlite"),
     );
+  });
+
+  it("Pi Desktop 对齐 app resolveDataDir：env 覆盖、开发目录与默认根", async () => {
+    await expect(resolvePiDesktopSessionsDir()).resolves.toBe(
+      path.join(homedir(), ".pi-desktop", "sessions"),
+    );
+    process.env.PI_DESKTOP_DATA_DIR = "  D:\\pi-data  ";
+    await expect(resolvePiDesktopSessionsDir()).resolves.toBe(
+      path.join("D:", "pi-data", "sessions"),
+    );
+    delete process.env.PI_DESKTOP_DATA_DIR;
+
+    process.env.PI_DESKTOP_DEV = "1";
+    await expect(resolvePiDesktopSessionsDir()).resolves.toBe(
+      path.join(homedir(), ".pi-desktop-dev", "sessions"),
+    );
+    delete process.env.PI_DESKTOP_DEV;
+  });
+
+  it("Pi Desktop 跟随应用内迁移 storage-location.json，损坏 / 版本不符 / 相对路径时静默回退", async () => {
+    const home = await temporaryHome();
+    const appData = path.join(home, "appdata");
+    const preferenceDir = path.join(appData, "PI-Desktop");
+    await mkdir(preferenceDir, { recursive: true });
+    const relocated = path.join(home, "relocated");
+    const preference = path.join(preferenceDir, "storage-location.json");
+
+    await writeFile(
+      preference,
+      JSON.stringify({ version: 1, roots: { data: relocated, browser: appData }, backups: [] }),
+    );
+    await expect(
+      resolvePiDesktopSessionsDir({ env: {}, homeDir: home, appDataDir: appData }),
+    ).resolves.toBe(path.join(relocated, "sessions"));
+
+    // env 覆盖时忽略迁移偏好（对齐 app 的 overridden 分支）。
+    await expect(
+      resolvePiDesktopSessionsDir({
+        env: { PI_DESKTOP_DATA_DIR: "D:\\pi-override" },
+        homeDir: home,
+        appDataDir: appData,
+      }),
+    ).resolves.toBe(path.join("D:", "pi-override", "sessions"));
+
+    await writeFile(preference, "{ invalid");
+    await expect(
+      resolvePiDesktopSessionsDir({ env: {}, homeDir: home, appDataDir: appData }),
+    ).resolves.toBe(path.join(home, ".pi-desktop", "sessions"));
+
+    await writeFile(preference, JSON.stringify({ version: 2, roots: { data: relocated } }));
+    await expect(
+      resolvePiDesktopSessionsDir({ env: {}, homeDir: home, appDataDir: appData }),
+    ).resolves.toBe(path.join(home, ".pi-desktop", "sessions"));
+
+    await writeFile(preference, JSON.stringify({ version: 1, roots: { data: "relative/data" } }));
+    await expect(
+      resolvePiDesktopSessionsDir({ env: {}, homeDir: home, appDataDir: appData }),
+    ).resolves.toBe(path.join(home, ".pi-desktop", "sessions"));
   });
 });
