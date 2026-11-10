@@ -483,13 +483,43 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
     }
 
     function piFile(...lines: string[]): string {
+      return piSessionFile(sessionId, ...lines);
+    }
+
+    function piSessionFile(fileSessionId: string, ...lines: string[]): string {
       const header = JSON.stringify({
         type: "session",
         createdAt: new Date(BASE_MS).toISOString(),
         schema: 2,
-        sessionId,
+        sessionId: fileSessionId,
       });
       return lines.length > 0 ? `${header}\n${lines.join("\n")}\n` : `${header}\n`;
+    }
+
+    /** 造一个最小 pi.sqlite（只含查询用到的列），写入 sessionId → 项目名映射。 */
+    async function writeProjectDatabase(mapping: Record<string, string>): Promise<void> {
+      const { DatabaseSync } = await import("node:sqlite");
+      const databasePath = path.join(root, "pi-desktop", "pi.sqlite");
+      await rm(databasePath, { force: true });
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.exec(
+          "CREATE TABLE projects (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, name TEXT NOT NULL)",
+        );
+        db.exec(
+          "CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL)",
+        );
+        const insertProject = db.prepare("INSERT INTO projects (id, path, name) VALUES (?, ?, ?)");
+        const insertSession = db.prepare("INSERT INTO sessions (id, project_id) VALUES (?, ?)");
+        const names = [...new Set(Object.values(mapping))];
+        const ids = new Map(names.map((name, index) => [name, index + 1]));
+        for (const [name, id] of ids) insertProject.run(id, `D:\\proj\\${id}`, name);
+        for (const [mappedSessionId, name] of Object.entries(mapping)) {
+          insertSession.run(mappedSessionId, ids.get(name)!);
+        }
+      } finally {
+        db.close();
+      }
     }
 
     async function sessionsDir(): Promise<string> {
@@ -585,6 +615,54 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
       expect(shrunk.stats.rebuilds).toBe(1);
       expect(shrunk.usage.records).toHaveLength(1);
       expect(shrunk.usage.records[0]?.requestId).toBe("op-0002");
+    });
+
+    it("项目标签取自 pi.sqlite 只读映射；重贴标签与改名都不重读会话文件", async () => {
+      const directory = await sessionsDir();
+      const sessionA = "aaaaaaaa-0000-0000-0000-000000000001";
+      const sessionB = "bbbbbbbb-0000-0000-0000-000000000002";
+      await writeFile(path.join(directory, `${sessionA}.jsonl`), piSessionFile(sessionA, piLine("op-0001", 0)));
+      await writeFile(path.join(directory, `${sessionB}.jsonl`), piSessionFile(sessionB, piLine("op-0002", 4000)));
+      const imported = await sync(readPiDesktopUsageIncremental);
+      expect(imported.usage.records.every((record) => record.project === "未知项目")).toBe(true);
+
+      // pi.sqlite 补上项目映射（应用先写转录、后补库行的真实时序）。
+      await writeProjectDatabase({ [sessionA]: "y-token-panel", [sessionB]: "VideoLingo" });
+      const relabeled = await sync(readPiDesktopUsageIncremental);
+      expect(relabeled.stats).toMatchObject({
+        unchangedFiles: 2,
+        bodyBytesRead: 0,
+        incrementalFilesRead: 0,
+      });
+      expect(
+        relabeled.usage.records.map((record) => [record.requestId, record.project]),
+      ).toEqual(
+        expect.arrayContaining([
+          ["op-0001", "y-token-panel"],
+          ["op-0002", "VideoLingo"],
+        ]),
+      );
+      expect(
+        store.readNormalizedRecords("pidesktop").every((record) => record.project !== "未知项目"),
+      ).toBe(true);
+      const baseline = await readPiDesktopUsage();
+      expect(relabeled.usage.records).toEqual(baseline.records);
+
+      // 应用内项目改名：同样零文件重读。
+      await writeProjectDatabase({ [sessionA]: "renamed", [sessionB]: "VideoLingo" });
+      const renamed = await sync(readPiDesktopUsageIncremental);
+      expect(renamed.stats.bodyBytesRead).toBe(0);
+      expect(renamed.usage.records.find((record) => record.requestId === "op-0001")?.project).toBe(
+        "renamed",
+      );
+
+      // 库暂时不可读：保留已入库标签，不回退未知项目。
+      await rm(path.join(root, "pi-desktop", "pi.sqlite"));
+      const kept = await sync(readPiDesktopUsageIncremental);
+      expect(kept.stats.bodyBytesRead).toBe(0);
+      expect(kept.usage.records.find((record) => record.requestId === "op-0001")?.project).toBe(
+        "renamed",
+      );
     });
   });
 });

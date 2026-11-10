@@ -19,7 +19,13 @@ import {
 import { codeBuddySource } from "@/lib/codebuddy";
 import { parseSessionFile } from "@/lib/codebuddy-session";
 import { readdir } from "node:fs/promises";
-import { isPiDesktopTranscriptFile, resolvePiDesktopSessionsDir } from "@/lib/pi-desktop";
+import {
+  applyPiDesktopProjectLabels,
+  isPiDesktopTranscriptFile,
+  readPiDesktopProjectLabels,
+  resolvePiDesktopDataDir,
+  resolvePiDesktopSessionsDir,
+} from "@/lib/pi-desktop";
 import { parsePiDesktopSession } from "@/lib/pi-desktop-session";
 import { kcodeRoot } from "@/lib/kcode";
 import {
@@ -622,10 +628,18 @@ async function discoverPiDesktopFiles(): Promise<WholeFileDiscovery<PiDesktopFil
   return { source, files, scannedFiles, skippedFiles, auxiliaries: [] };
 }
 
-export function readPiDesktopUsageIncremental(store: UsageStore): Promise<IncrementalUsageResult> {
-  return readWholeFileUsageIncremental(store, {
+export async function readPiDesktopUsageIncremental(
+  store: UsageStore,
+): Promise<IncrementalUsageResult> {
+  const result = await readWholeFileUsageIncremental(store, {
     harness: "pidesktop",
     discover: discoverPiDesktopFiles,
     parseFile: (file, content) => parsePiDesktopSession(content, file.name),
   });
+  // 项目名只存于 pi.sqlite；整读引擎每轮返回该来源的全量记录，这里直接重贴
+  // 标签即可——未变化会话文件零重读，改名/库暂时不可读时保留原标签。
+  if (!result.usage.sourceAvailable) return result;
+  const labels = await readPiDesktopProjectLabels(await resolvePiDesktopDataDir());
+  result.usage.records = applyPiDesktopProjectLabels(result.usage.records, labels);
+  return result;
 }

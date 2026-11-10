@@ -74,20 +74,26 @@ export interface PiDesktopSourceOptions {
   appDataDir?: string;
 }
 
-export async function resolvePiDesktopSessionsDir(
+export async function resolvePiDesktopDataDir(
   options: PiDesktopSourceOptions = {},
 ): Promise<string> {
   const env = options.env ?? process.env;
   const home = options.homeDir ?? homedir();
   const development = env.PI_DESKTOP_DEV === "1";
   const override = env.PI_DESKTOP_DATA_DIR?.trim();
-  if (override) return path.join(path.resolve(override), "sessions");
+  if (override) return path.resolve(override);
   const preferenceDir = await readStoragePreferenceDataDir(
     options.appDataDir ?? electronAppDataDir(env, home),
     development,
   );
-  if (preferenceDir) return path.join(preferenceDir, "sessions");
-  return path.join(home, development ? DEVELOPMENT_DATA_DIR_NAME : INSTALL_DATA_DIR_NAME, "sessions");
+  if (preferenceDir) return preferenceDir;
+  return path.join(home, development ? DEVELOPMENT_DATA_DIR_NAME : INSTALL_DATA_DIR_NAME);
+}
+
+export async function resolvePiDesktopSessionsDir(
+  options: PiDesktopSourceOptions = {},
+): Promise<string> {
+  return path.join(await resolvePiDesktopDataDir(options), "sessions");
 }
 
 /** sessions/ 扁平目录里的转录文件；revisions / inflight 等伴随文件不是转录。 */
@@ -95,8 +101,67 @@ export function isPiDesktopTranscriptFile(name: string): boolean {
   return name.endsWith(".jsonl") && !name.endsWith(".revisions.jsonl");
 }
 
+/**
+ * 会话转录里没有项目信息，归属只在 pi.sqlite（sessions.project_id →
+ * projects.name，schema 已按本机 0.22.0 实库确认）。这里只读打开、单查询取
+ * sessionId → 项目名映射；应用运行中（WAL）并发只读安全，打不开 / 损坏 /
+ * 缺表时返回空映射，由调用方保留原标签。
+ */
+export async function readPiDesktopProjectLabels(dataDir: string): Promise<Map<string, string>> {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    return new Map();
+  }
+  let db;
+  try {
+    db = new DatabaseSync(path.join(dataDir, "pi.sqlite"), { readOnly: true });
+    const rows = db
+      .prepare(
+        "SELECT s.id AS session_id, p.name AS project_name FROM sessions s JOIN projects p ON p.id = s.project_id",
+      )
+      .all() as Array<{ session_id?: unknown; project_name?: unknown }>;
+    const labels = new Map<string, string>();
+    for (const row of rows) {
+      if (
+        typeof row.session_id === "string" &&
+        typeof row.project_name === "string" &&
+        row.project_name !== ""
+      ) {
+        labels.set(row.session_id, row.project_name);
+      }
+    }
+    return labels;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // 打开失败时无需关闭。
+    }
+  }
+}
+
+/**
+ * 重贴项目标签：映射命中则覆盖（含「未知项目」→ 实名与后续改名），未命中
+ * 保留原值——库暂时不可读不让已入库的标签回退。
+ */
+export function applyPiDesktopProjectLabels(
+  records: UsageRecord[],
+  labels: Map<string, string>,
+): UsageRecord[] {
+  if (labels.size === 0) return records;
+  return records.map((record) => {
+    const label = labels.get(record.sessionId);
+    return label && label !== record.project ? { ...record, project: label } : record;
+  });
+}
+
 export async function readPiDesktopUsage(): Promise<HarnessUsage> {
-  const source = await resolvePiDesktopSessionsDir();
+  const dataDir = await resolvePiDesktopDataDir();
+  const source = path.join(dataDir, "sessions");
   const records: UsageRecord[] = [];
   const seen = new Set<string>();
   let scannedFiles = 0;
@@ -135,9 +200,10 @@ export async function readPiDesktopUsage(): Promise<HarnessUsage> {
   }
 
   records.sort((a, b) => b.timestamp - a.timestamp);
+  const labels = await readPiDesktopProjectLabels(dataDir);
   return {
     harness: "pidesktop",
-    records,
+    records: applyPiDesktopProjectLabels(records, labels),
     scannedFiles,
     skippedFiles,
     source,
