@@ -1,3 +1,4 @@
+import { collectFirstTokenMedians } from "@/lib/first-token";
 import { sumSpeedTotals } from "@/lib/speed";
 
 export const HARNESS_OPTIONS = [
@@ -50,6 +51,11 @@ export interface UsageRecord {
    * 请求起点，含首字等待）；推不出时为 undefined。Qoder 记录没有该字段。
    */
   estimatedDurationMs?: number;
+  /**
+   * 首 token 耗时（毫秒）。ZCode / KCode / Antigravity / DSH 为原生精确计时；
+   * Claude / Codex 按时间戳推算（见 first-token.ts）；其余 Harness 没有。
+   */
+  firstTokenMs?: number;
   status: "success" | "error";
 }
 
@@ -195,6 +201,10 @@ export interface UsageSummary {
   speedOutputTokens: number;
   /** 速度分母：同批请求的估算耗时之和（毫秒）。汇总速度 = 分子 ÷ (分母 / 1000)。 */
   speedDurationMs: number;
+  /** 首 token 中位数（毫秒）：原生计时来源的成功请求；没有时为 null。 */
+  firstTokenMedianMs: number | null;
+  /** 估算首 token 中位数（毫秒）：Claude / Codex 按时间戳推出的请求；展示带 ≈。 */
+  estFirstTokenMedianMs: number | null;
 }
 
 export interface GroupStat extends UsageSummary {
@@ -310,6 +320,7 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     return credits === undefined ? [] : [{ harness: option.id, label: option.label, credits }];
   });
   const speedTotals = sumSpeedTotals(records);
+  const firstToken = collectFirstTokenMedians(records);
   return {
     requests: records.length,
     credits: records.reduce((sum, record) => sum + record.credits, 0),
@@ -327,6 +338,8 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     successRate: records.length > 0 ? successful / records.length : 0,
     speedOutputTokens: speedTotals.speedOutputTokens,
     speedDurationMs: speedTotals.speedDurationMs,
+    firstTokenMedianMs: firstToken.firstTokenMedianMs,
+    estFirstTokenMedianMs: firstToken.estFirstTokenMedianMs,
   };
 }
 

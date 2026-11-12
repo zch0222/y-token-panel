@@ -94,6 +94,8 @@ function viewPayload(revision: number): UsageView {
       successRate: 0,
       speedOutputTokens: 0,
       speedDurationMs: 0,
+      firstTokenMedianMs: null,
+      estFirstTokenMedianMs: null,
     },
     todaySummary: {
       requests: 0,
@@ -112,6 +114,8 @@ function viewPayload(revision: number): UsageView {
       successRate: 0,
       speedOutputTokens: 0,
       speedDurationMs: 0,
+      firstTokenMedianMs: null,
+      estFirstTokenMedianMs: null,
     },
     trend: [],
     groups: { harness: [], provider: [], model: [], project: [] },

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { estimatedFirstTokenMs } from "@/lib/first-token";
 import { deriveProvider, getProjectLabel, type UsageRecord } from "@/lib/usage";
 
 /**
@@ -26,6 +27,12 @@ import { deriveProvider, getProjectLabel, type UsageRecord } from "@/lib/usage";
  *   的 time 差估算（一步 = 一次模型调用 + 它请求的工具执行；含首字等待与
  *   重试，cc-switch latency_ms 同款）。同一步的 start 在用掉后即删除，第二次
  *   尝试不会复用旧起点。
+ * - 首字：`data.stream` 是 AssistantStreamRecord 紧凑数组（dsh-llm
+ *   assistant-stream.js）：打包 delta run 的 `time0` 是 run 里第一个成员的
+ *   时刻（后续成员按 dt 递增），`chunk` 行的 `time` 是该块发送时刻。取全部
+ *   time/time0 里最早的一个作为首个输出分片的到达时刻（cc-switch
+ *   first_output_time 同款），减 `step/start` 得首字时间；两个时间戳都是
+ *   harness 写事件的真实时刻，非跨行推断。首字须落在 (0, 耗时] 内。
  * - `interrupted: true`（流被取消的前缀）在本机全部会话中从不与 usage 共现
  *   （10742 条计量记录 0 例），计量的都是成功落盘的响应，status 恒为 success。
  * - 日志里没有计费字段（credits），DSH 按账号/API Key 计费，本地不可见。
@@ -48,6 +55,12 @@ interface DshSource {
   model?: unknown;
 }
 
+interface DshStreamRecord {
+  type?: unknown;
+  time?: unknown;
+  time0?: unknown;
+}
+
 interface DshEvent {
   type?: unknown;
   time?: unknown;
@@ -56,6 +69,7 @@ interface DshEvent {
     step?: unknown;
     interrupted?: unknown;
     usage?: DshEventUsage;
+    stream?: unknown;
     message?: {
       id?: unknown;
       source?: DshSource;
@@ -83,6 +97,24 @@ function stepKey(turn: unknown, step: unknown): string {
   return `${typeof turn === "number" ? turn : "∞"}:${
     typeof step === "number" ? step : "∞"
   }`;
+}
+
+/**
+ * stream 里最早一块的时间戳：`time` 是整块的发送时间，`time0` 是打包块
+ * （text-chunks / reasoning-chunks / tool-call-chunks）的起始时间
+ * （cc-switch first_output_time 同款，DSH 官方 assistantStreamFirstTokenTime
+ * 对打包块同样从 time0 起算）。stream 缺失或没有合法时间戳时 undefined。
+ */
+export function dshFirstOutputTime(stream: unknown): number | undefined {
+  if (!Array.isArray(stream)) return undefined;
+  let first: number | undefined;
+  for (const entry of stream as DshStreamRecord[]) {
+    for (const value of [entry.time, entry.time0]) {
+      const time = finiteTime(value);
+      if (time !== undefined && (first === undefined || time < first)) first = time;
+    }
+  }
+  return first;
 }
 
 /**
@@ -302,6 +334,14 @@ function parseDshLines(
       stepStart !== undefined && timestamp > stepStart
         ? timestamp - stepStart
         : undefined;
+    // 首字 = stream 里最早一块时间戳 − step/start；须落在 (0, 耗时] 内。
+    let firstTokenMs: number | undefined;
+    if (stepStart !== undefined && duration !== undefined) {
+      const firstOutput = dshFirstOutputTime(data?.stream);
+      if (firstOutput !== undefined) {
+        firstTokenMs = estimatedFirstTokenMs(stepStart, firstOutput, duration);
+      }
+    }
 
     records.push({
       id: `dsh:${messageId}`,
@@ -322,6 +362,7 @@ function parseDshLines(
       credits: 0,
       hasCredit: false,
       estimatedDurationMs: duration,
+      ...(firstTokenMs === undefined ? {} : { firstTokenMs }),
       status: "success",
     });
   }

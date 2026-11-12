@@ -29,6 +29,11 @@ import type { UsageRecord } from "@/lib/usage";
  * - `started_at` / `completed_at` / `duration_ms`：epoch 毫秒；duration_ms =
  *   completedAt − startedAt（请求起点到完成的墙钟，含首字等待），是精确值而非
  *   估算，可直接当速度统计的耗时。
+ * - `first_token_at` / `time_to_first_token_ms`：JJo 取首个非空 text_delta /
+ *   reasoning_delta 流事件（Ge.ModelStreaming）的时刻记 firstTokenAt，TTFT =
+ *   firstTokenAt − startedAt（HC 写入）；非流式或无 delta 的请求为 NULL
+ *   （本机 3558 行中 2296 行有值）。优先取 time_to_first_token_ms，缺失时用
+ *   first_token_at − started_at 推；须落在 (0, duration_ms] 内。
  * - 保留策略：pruneUsage（bundle 内 JNe）在每次写入后删除 started_at 早于
  *   30 天的行，所以库里最多只有最近 30 天。
  * - 未采用 ~/.zcode/cli/rollout/model-io-*.jsonl 做数据源：writeModelIODebugRecord
@@ -48,6 +53,8 @@ export interface ZcodeModelUsageRow {
   status: string | null;
   started_at: number | null;
   duration_ms?: number | null;
+  first_token_at?: number | null;
+  time_to_first_token_ms?: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
   reasoning_tokens?: number | null;
@@ -138,6 +145,28 @@ export function parseZcodeUsageRow(
   const totalTokens =
     storedTotal > 0 ? storedTotal : inputTokens + outputTokens;
   const durationMs = Number(row.duration_ms);
+  const estimatedDurationMs =
+    Number.isFinite(durationMs) && durationMs > 0
+      ? Math.trunc(durationMs)
+      : undefined;
+  // TTFT 优先取原生 time_to_first_token_ms；缺失时按 first_token_at − started_at
+  // 推（写入方就是这一减法）；两者都要求落在 (0, duration] 内才算可信。
+  const storedTtft = Number(row.time_to_first_token_ms);
+  const firstTokenAt = Number(row.first_token_at);
+  let firstTokenMs: number | undefined;
+  if (Number.isFinite(storedTtft) && storedTtft > 0) {
+    firstTokenMs = storedTtft;
+  } else if (Number.isFinite(firstTokenAt) && firstTokenAt > 0) {
+    firstTokenMs = firstTokenAt - timestamp;
+  }
+  if (
+    firstTokenMs === undefined ||
+    !Number.isFinite(firstTokenMs) ||
+    firstTokenMs <= 0 ||
+    (estimatedDurationMs !== undefined && firstTokenMs > estimatedDurationMs)
+  ) {
+    firstTokenMs = undefined;
+  }
 
   return {
     id: `zcode:${row.id}`,
@@ -157,10 +186,8 @@ export function parseZcodeUsageRow(
     hasTokenUsage: totalTokens > 0,
     credits: 0,
     hasCredit: false,
-    estimatedDurationMs:
-      Number.isFinite(durationMs) && durationMs > 0
-        ? Math.trunc(durationMs)
-        : undefined,
+    estimatedDurationMs,
+    ...(firstTokenMs === undefined ? {} : { firstTokenMs: Math.round(firstTokenMs) }),
     status: row.status === "completed" ? "success" : "error",
   };
 }
@@ -178,6 +205,8 @@ export const ZCODE_USAGE_SQL = `
     m.status,
     m.started_at,
     m.duration_ms,
+    m.first_token_at,
+    m.time_to_first_token_ms,
     m.input_tokens,
     m.output_tokens,
     m.reasoning_tokens,

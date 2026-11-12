@@ -443,6 +443,7 @@ function baseRecord(
   requestId: string,
   timestamp: number,
   latencyMs: number,
+  firstTokenMs: number | undefined,
   context: KcodeWireContext,
 ): UsageRecord {
   return {
@@ -465,6 +466,7 @@ function baseRecord(
     credits: 0,
     hasCredit: false,
     estimatedDurationMs: latencyMs > 0 ? latencyMs : undefined,
+    ...(firstTokenMs === undefined ? {} : { firstTokenMs }),
     status: "success",
   };
 }
@@ -492,6 +494,7 @@ function messageRecord(
     messageId,
     timestamp,
     latencyMs,
+    info?.firstTokenMs,
     context,
   );
 }
@@ -520,6 +523,7 @@ function stepRecord(
     messageId,
     timestamp,
     latencyMs,
+    info?.firstTokenMs,
     context,
   );
 }

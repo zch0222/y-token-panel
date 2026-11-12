@@ -144,13 +144,17 @@ describe("parseAntigravityTranscript", () => {
       step({ step_index: 1 }),
       step({ step_index: 88, type: "CHECKPOINT", source: "SYSTEM" }),
     ].join("\n");
-    const timings = new Map([
-      [1, 8013],
-      [88, 11000],
+    const timings = new Map<number, { durationMs: number; firstTokenMs: number }>([
+      [1, { durationMs: 8013, firstTokenMs: 3000 }],
+      [88, { durationMs: 11000, firstTokenMs: 500 }],
     ]);
     const records = parseAntigravityTranscript(content, "conv", "demo", { timings });
     expect(records.map((record) => [record.id, record.estimatedDurationMs])).toEqual([
       ["antigravity:conv:1", 8013],
+      ["antigravity:conv:88", undefined],
+    ]);
+    expect(records.map((record) => [record.id, record.firstTokenMs])).toEqual([
+      ["antigravity:conv:1", 3000],
       ["antigravity:conv:88", undefined],
     ]);
   });

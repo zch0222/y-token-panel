@@ -1,3 +1,4 @@
+import type { AntigravityGenerationTiming } from "@/lib/antigravity-timing";
 import { deriveProvider, type UsageRecord } from "@/lib/usage";
 
 /**
@@ -100,8 +101,8 @@ function hasUsage(step: AntigravityTranscriptStep): boolean {
  * 时取最后一条（Antigravity 会把 RUNNING 行改写成 DONE）。
  */
 export interface AntigravityParseOptions {
-  /** step 索引 → 原生库记录的精确耗时（毫秒）；只有 PLANNER_RESPONSE 使用。 */
-  timings?: ReadonlyMap<number, number>;
+  /** step 索引 → 原生库记录的精确计时；只有 PLANNER_RESPONSE 使用。 */
+  timings?: ReadonlyMap<number, AntigravityGenerationTiming>;
 }
 
 export function parseAntigravityTranscript(
@@ -145,7 +146,8 @@ export function parseAntigravityTranscript(
 
     const model = currentModel ?? UNKNOWN_MODEL;
     const requestId = `${conversationId}:${stepIndex}`;
-    const duration = step.type === "PLANNER_RESPONSE" ? timings?.get(stepIndex) : undefined;
+    const timing =
+      step.type === "PLANNER_RESPONSE" ? timings?.get(stepIndex) : undefined;
     records.set(`antigravity:${requestId}`, {
       id: `antigravity:${requestId}`,
       requestId,
@@ -164,7 +166,9 @@ export function parseAntigravityTranscript(
       hasTokenUsage: true,
       credits: 0,
       hasCredit: false,
-      ...(duration === undefined ? {} : { estimatedDurationMs: duration }),
+      ...(timing === undefined
+        ? {}
+        : { estimatedDurationMs: timing.durationMs, firstTokenMs: timing.firstTokenMs }),
       status: "success",
     });
   }

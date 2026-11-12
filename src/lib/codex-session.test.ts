@@ -782,7 +782,56 @@ describe("CodexRequestTimer", () => {
     timer.observeLine(tokenCountAt(4, ts(44)));
     expect(
       timer.finishRequest(at(44), usage({ inputTokens: 10, outputTokens: 5 })),
-    ).toBe(at(13) - at(2));
+    ).toEqual({ latencyMs: at(13) - at(2) });
+  });
+
+  it("首字 = item_completed 的 started_at_ms − 起点；取最早的一项", () => {
+    const timer = new CodexRequestTimer();
+    timer.observeLine(userMessage(1, ts(0)));
+    // 两个模型输出项：5s / 8s 开始生成，最早的是首字。
+    timer.observeLine(
+      line(2, ts(9), "event_msg", {
+        type: "item_completed",
+        item: { type: "Reasoning" },
+        started_at_ms: at(5),
+      }),
+    );
+    timer.observeLine(
+      line(3, ts(12), "event_msg", {
+        type: "item_completed",
+        item: { type: "AgentMessage" },
+        started_at_ms: at(8),
+      }),
+    );
+    timer.observeLine(tokenCountAt(4, ts(15)));
+    expect(
+      timer.finishRequest(at(15), usage({ inputTokens: 10, outputTokens: 5 })),
+    ).toEqual({ latencyMs: at(15) - at(0), firstTokenMs: at(5) - at(0) });
+  });
+
+  it("没有模型输出项的 item_completed 时只有 latency（工具项不参与首字）", () => {
+    const plain = new CodexRequestTimer();
+    plain.observeLine(userMessage(1, ts(0)));
+    plain.observeLine(reasoning(2, ts(4)));
+    plain.observeLine(tokenCountAt(3, ts(9)));
+    expect(
+      plain.finishRequest(at(9), usage({ inputTokens: 10, outputTokens: 5 })),
+    ).toEqual({ latencyMs: at(9) - at(0) });
+
+    // 工具执行项的 started_at_ms 不是模型输出，不参与首字。
+    const tools = new CodexRequestTimer();
+    tools.observeLine(userMessage(1, ts(0)));
+    tools.observeLine(
+      line(2, ts(3), "event_msg", {
+        type: "item_completed",
+        item: { type: "ToolCall" },
+        started_at_ms: at(1),
+      }),
+    );
+    tools.observeLine(tokenCountAt(3, ts(9)));
+    expect(
+      tools.finishRequest(at(9), usage({ inputTokens: 10, outputTokens: 5 })),
+    ).toEqual({ latencyMs: at(9) - at(0) });
   });
 
   it("usage_record 与本次 last 对不上时不用它当终点", () => {
@@ -798,7 +847,7 @@ describe("CodexRequestTimer", () => {
     timer.observeLine(tokenCountAt(4, ts(20)));
     expect(
       timer.finishRequest(at(20), usage({ inputTokens: 10, outputTokens: 5 })),
-    ).toBe(at(20) - at(2));
+    ).toEqual({ latencyMs: at(20) - at(2) });
   });
 
   it("token_count 等工具跑完才写时改用最后一个输出项的时刻", () => {
@@ -810,7 +859,7 @@ describe("CodexRequestTimer", () => {
     timer.observeLine(tokenCountAt(4, ts(20) /* +5ms 用整行时间 */));
     expect(
       timer.finishRequest(at(20), usage({ inputTokens: 10, outputTokens: 5 })),
-    ).toBe(at(10) - at(0));
+    ).toEqual({ latencyMs: at(10) - at(0) });
   });
 
   it("旧布局补写在 token_count 之后的输出项不属于下一次请求", () => {
@@ -827,7 +876,7 @@ describe("CodexRequestTimer", () => {
     timer.observeLine(reasoning(6, ts(51)));
     expect(
       timer.finishRequest(at(52), usage({ inputTokens: 10, outputTokens: 5 })),
-    ).toBe(at(52) - at(50));
+    ).toEqual({ latencyMs: at(52) - at(50) });
   });
 
   it("task_started 清掉中断请求留下的起点", () => {
@@ -840,7 +889,7 @@ describe("CodexRequestTimer", () => {
     timer.observeLine(reasoning(4, ts(3)));
     expect(
       timer.finishRequest(at(4), usage({ inputTokens: 10, outputTokens: 5 })),
-    ).toBe(at(4) - at(2));
+    ).toEqual({ latencyMs: at(4) - at(2) });
   });
 
   it("估不出合理窗口（缺起点/过短）返回 undefined", () => {

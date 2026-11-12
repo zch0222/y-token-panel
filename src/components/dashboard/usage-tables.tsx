@@ -37,6 +37,10 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import {
+  formatFirstTokenSeconds,
+  PRECISE_FIRST_TOKEN_HARNESSES,
+} from "@/lib/first-token";
+import {
   formatAggregateTokensPerSecond,
   formatEstimatedTokensPerSecond,
   type SpeedTotals,
@@ -138,6 +142,26 @@ const SPEED_HELP =
 const REQUEST_SPEED_HELP =
   "速度 = 输出 Tokens ÷ 耗时（含首字等待）。仅输出 ≥ 200 且耗时 ≥ 1s 的请求展示；Antigravity 使用原生库的精确耗时。";
 
+const FIRST_TOKEN_HELP =
+  "首字时间（TTFT）= 请求发出到上游开始输出的等待。ZCode / KCode / Antigravity / DSH 是各自本地记录的原生计时；Claude Code 只有回复以思考块开头时才能按 thinkingDurationMs 推出，Codex 只有新版日志里带 started_at_ms 的输出项才能推出——带 ≈ 的按时间戳推算，起点是上一条日志写盘的时刻（含客户端组装请求的时间），系统性偏高。CodeBuddy / WorkBuddy / Qoder / Pi Desktop 的本地会话没有首字计时。分组行取中位数（不会被个别排队、冷启动的慢请求拉高）。";
+
+/** 分组行的首字：精确中位数优先，没有才回落估算中位数并带 ≈。 */
+function firstTokenCell(
+  stat: Pick<GroupStat, "firstTokenMedianMs" | "estFirstTokenMedianMs">,
+): { text: string; estimated: boolean } | null {
+  const precise = formatFirstTokenSeconds(stat.firstTokenMedianMs);
+  if (precise !== null) return { text: precise, estimated: false };
+  const estimated = formatFirstTokenSeconds(stat.estFirstTokenMedianMs);
+  return estimated === null ? null : { text: estimated, estimated: true };
+}
+
+/** 单条请求的首字；Claude / Codex 按时间戳推算，展示带 ≈。 */
+function requestFirstTokenCell(record: UsageRecord): string | null {
+  const value = formatFirstTokenSeconds(record.firstTokenMs);
+  if (value === null) return null;
+  return PRECISE_FIRST_TOKEN_HARNESSES.has(record.harness) ? value : `≈ ${value}`;
+}
+
 function RequestSpeedValue({ record }: { record: UsageRecord }) {
   const speed = formatEstimatedTokensPerSecond(record);
   if (speed == null) return <span className="text-muted-foreground">—</span>;
@@ -191,6 +215,9 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
               速度 <Gauge className="size-3 text-muted-foreground" />
             </span>
           </TableHead>
+          <TableHead className={headClass} title={FIRST_TOKEN_HELP}>
+            首字
+          </TableHead>
           <TableHead className={headClass}>缓存命中率</TableHead>
           <TableHead className={headClass}>成功率</TableHead>
           <TableHead className={cn(headClass, "pr-6 text-right")}>最近使用</TableHead>
@@ -198,7 +225,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
       </TableHeader>
       <TableBody>
         {stats.length === 0 ? (
-          <EmptyRow colSpan={8} />
+          <EmptyRow colSpan={9} />
         ) : (
           stats.map((stat) => {
             const label =
@@ -243,6 +270,15 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
                   </span>
                 </TableCell>
                 <SpeedCell stat={stat} />
+                <TableCell className={cellClass} title={FIRST_TOKEN_HELP}>
+                  {(() => {
+                    const firstToken = firstTokenCell(stat);
+                    if (firstToken === null) {
+                      return <span className="text-muted-foreground">—</span>;
+                    }
+                    return firstToken.estimated ? `≈ ${firstToken.text}` : firstToken.text;
+                  })()}
+                </TableCell>
                 <TableCell className={cellClass}>
                   {stat.cacheableInputTokens > 0 ? formatPercent(stat.cacheRate) : "—"}
                 </TableCell>
@@ -289,7 +325,7 @@ function RequestTable({
 
   return (
     <div>
-      <Table className="min-w-[1260px]">
+      <Table className="min-w-[1330px]">
         <TableHeader>
           <TableRow className="border-border/70 hover:bg-transparent">
             <TableHead className={cn(headClass, "pl-6")}>时间</TableHead>
@@ -305,17 +341,20 @@ function RequestTable({
                 速度 <Gauge className="size-3 text-muted-foreground" />
               </span>
             </TableHead>
+            <TableHead className={cn(headClass, "text-right")} title={FIRST_TOKEN_HELP}>
+              首字
+            </TableHead>
             <TableHead className={cn(headClass, "text-right")}>Credits</TableHead>
             <TableHead className={cn(headClass, "pr-6 text-right")}>状态</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading ? (
-            <EmptyRow colSpan={11} title="正在加载请求日志…" description="请稍候，日志返回后会自动展示" />
+            <EmptyRow colSpan={12} title="正在加载请求日志…" description="请稍候，日志返回后会自动展示" />
           ) : unavailable ? (
-            <EmptyRow colSpan={11} title="请求日志加载失败" description="请点击上方“重试”，请勿将此状态理解为零条请求" />
+            <EmptyRow colSpan={12} title="请求日志加载失败" description="请点击上方“重试”，请勿将此状态理解为零条请求" />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={11} />
+            <EmptyRow colSpan={12} />
           ) : (
             rows.map((record) => (
               <TableRow
@@ -363,6 +402,11 @@ function RequestTable({
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
                   <RequestSpeedValue record={record} />
+                </TableCell>
+                <TableCell className={cn(cellClass, "text-right")} title={FIRST_TOKEN_HELP}>
+                  {requestFirstTokenCell(record) ?? (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
                   {record.billable === false ? (
@@ -661,6 +705,16 @@ export function UsageTables({
                     }
                   />
                 )}
+                {detail.firstTokenMs !== undefined && (
+                  <DetailItem
+                    label="首字时间"
+                    value={
+                      PRECISE_FIRST_TOKEN_HARNESSES.has(detail.harness)
+                        ? formatFirstTokenSeconds(detail.firstTokenMs) ?? "—"
+                        : `≈ ${formatFirstTokenSeconds(detail.firstTokenMs) ?? "—"}`
+                    }
+                  />
+                )}
               </div>
               <div className="space-y-2.5">
                 {detail.billable !== undefined && (
@@ -691,6 +745,10 @@ export function UsageTables({
                   (detail.harness === "antigravity"
                     ? " 耗时取自 Antigravity 原生会话库（首字等待 + 流式时长，含首字），速度 = 输出 Tokens ÷ 耗时；仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。"
                     : " 速度与耗时为估算值：按会话时间戳推算（消息完成时刻 − 请求起点），含首字等待，仅统计输出 ≥ 200 Tokens 且耗时 ≥ 1s 的请求。")}
+                {detail.firstTokenMs !== undefined &&
+                  (PRECISE_FIRST_TOKEN_HARNESSES.has(detail.harness)
+                    ? " 首字时间为该 Harness 的原生计时。"
+                    : " 首字时间按会话时间戳推算，起点含客户端组装请求的时间，系统性偏高。")}
               </p>
             </>
           )}

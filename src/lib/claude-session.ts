@@ -1,3 +1,4 @@
+import { estimatedFirstTokenMs } from "@/lib/first-token";
 import {
   deriveProvider,
   getProjectLabel,
@@ -25,6 +26,11 @@ import {
  * - `timestamp`：该行入库时刻，即该内容块完成的时刻（claude.exe:
  *   `timestamp:new Date().toISOString()`）。
  * - `apiBlockIndex`：块在响应内的序号，首块为 0；旧版日志无此字段。
+ * - `thinkingDurationMs`（思考块行）：claude.exe 的 Nlt 计算的单调钟差值
+ *   （content_block_stop − content_block_start，Math.max(1, round)），wLn 在
+ *   thinking 块 content_block_start 时记起点。行 `timestamp` 是该块写完的
+ *   墙钟时刻，两者相减得到块开始时刻；首块是思考块时它就是首字时刻，
+ *   据此推 firstTokenMs（估算，起点含客户端组请求时间，系统性偏高）。
  * - `parentUuid`：上一条已入库行的 uuid。转录里没有单请求延迟字段
  *   （`durationMs` 只出现在工具结果与 hook 汇总里），耗时只能按
  *   「该消息所有块最晚时间戳 − 请求起点行时间戳」估算；请求起点沿父链回溯，
@@ -60,11 +66,14 @@ export interface ClaudeTranscriptLine {
   sessionId?: string;
   cwd?: string;
   apiBlockIndex?: number;
+  /** 思考块专属：该块从 content_block_start 到 content_block_stop 的毫秒数。 */
+  thinkingDurationMs?: number;
   message?: {
     id?: string;
     model?: string;
     stop_reason?: string | null;
     usage?: ClaudeUsage;
+    content?: Array<{ type?: string }>;
   };
 }
 
@@ -124,8 +133,34 @@ interface ClaudeMessageTiming {
   firstParent?: string;
   /** 最先出现的块是否这条回复的第一块；不是的话起点会取晚，宁可不估。 */
   startsAtFirstBlock: boolean;
+  /**
+   * 回复开始输出的时刻（首字）：首块是思考块时才有——块时间戳是它写完的
+   * 时刻，减 thinkingDurationMs（claude.exe：content_block_stop − start 的
+   * 单调钟差值）得到块开始时刻。首块是文字/工具调用时推不出，为 undefined。
+   */
+  firstOutputMs?: number;
   /** 各块时间戳（块完成时刻）里最晚的一个，即回复结束。 */
   endMs?: number;
+}
+
+/**
+ * 首块思考块的开始时刻：块完成时间戳 − thinkingDurationMs。不是思考块、
+ * 缺字段（旧版 Claude Code）或差值非正时返回 undefined（cc-switch
+ * thinking_block_start_ms 同款；thinkingDurationMs 语义已按本机 claude.exe
+ * 2.1.322 的 Nlt/wLn 核实）。
+ */
+function thinkingBlockStartMs(
+  line: ClaudeTranscriptLine,
+  blockEndMs: number,
+): number | undefined {
+  const duration = line.thinkingDurationMs;
+  const blockType = line.message?.content?.[0]?.type;
+  if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0) {
+    return undefined;
+  }
+  if (blockType !== "thinking") return undefined;
+  const start = blockEndMs - duration;
+  return Number.isFinite(start) ? start : undefined;
 }
 
 function recordClaudeBlockTiming(
@@ -141,6 +176,10 @@ function recordClaudeBlockTiming(
     timing = {
       firstParent: line.parentUuid ?? undefined,
       startsAtFirstBlock,
+      firstOutputMs:
+        startsAtFirstBlock && blockEndMs !== undefined
+          ? thinkingBlockStartMs(line, blockEndMs)
+          : undefined,
       endMs: blockEndMs,
     };
     timings.set(messageId, timing);
@@ -342,10 +381,20 @@ export function parseClaudeTranscriptIncremental(
     // 耗时估算只给写完整了的回复（有 stop_reason）且看得到首块的。
     const timing = timings.get(candidate.messageId);
     let estimatedDurationMs: number | undefined;
+    let firstTokenMs: number | undefined;
     if (timing?.startsAtFirstBlock && line.message?.stop_reason != null) {
       const startMs = resolveClaudeRequestStartMs(chain, timing.firstParent);
       if (startMs !== undefined && timing.endMs !== undefined) {
         estimatedDurationMs = estimateClaudeLatencyMs(startMs, timing.endMs);
+        // 首字只给推得出首块开始时刻（思考块开头）且耗时可信的回复；必须
+        // 落在 (0, 耗时] 内，否则说明起点或首字取错了。
+        if (estimatedDurationMs !== undefined && timing.firstOutputMs !== undefined) {
+          firstTokenMs = estimatedFirstTokenMs(
+            startMs,
+            timing.firstOutputMs,
+            estimatedDurationMs,
+          );
+        }
       }
     }
 
@@ -368,6 +417,7 @@ export function parseClaudeTranscriptIncremental(
       credits: 0,
       hasCredit: false,
       estimatedDurationMs,
+      ...(firstTokenMs === undefined ? {} : { firstTokenMs }),
       status: "success",
     });
   }

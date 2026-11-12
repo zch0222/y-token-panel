@@ -1,5 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  collectFirstTokenMedians,
+  type FirstTokenMedians,
+} from "@/lib/first-token";
+import {
   SPEED_ESTIMATE_MIN_DURATION_MS,
   SPEED_ESTIMATE_MIN_OUTPUT_TOKENS,
 } from "@/lib/speed";
@@ -83,6 +87,7 @@ export interface RecordRow {
   billable: number | null;
   context_usage_ratio: number | null;
   estimated_duration_ms: number | null;
+  first_token_ms: number | null;
   status: "success" | "error";
 }
 
@@ -114,6 +119,7 @@ export function mapRecordRow(row: RecordRow): UsageRecord {
     ...(row.estimated_duration_ms === null
       ? {}
       : { estimatedDurationMs: row.estimated_duration_ms }),
+    ...(row.first_token_ms === null ? {} : { firstTokenMs: row.first_token_ms }),
     status: row.status,
   };
 }
@@ -193,7 +199,49 @@ const SUMMARY_SQL = `
 
 const EMPTY_SUMMARY = summarizeRecords([]);
 
-function summaryFromRow(row: SummaryRow, creditsByHarness: UsageSummary["creditsByHarness"]): UsageSummary {
+/**
+ * 按分组键取首 token 双口径中位数（毫秒）。首字时间长尾明显，用中位数而不是
+ * 平均（cc-switch first_token_medians 同款）；SQLite 没有中位数函数，取出
+ * first_token_ms 非空的成功行在 JS 里分桶统计。`groupColumn` 缺省时是整体一条。
+ */
+function firstTokenMedians(
+  db: DatabaseSync,
+  where: string,
+  params: Array<string | number>,
+  groupColumn?: string,
+): Map<string, FirstTokenMedians> {
+  const keySql = groupColumn === undefined ? "''" : groupColumn;
+  const rows = db
+    .prepare(
+      `SELECT ${keySql} AS k, harness, first_token_ms
+       FROM usage_records
+       WHERE ${where} AND first_token_ms IS NOT NULL AND status = 'success'
+       ORDER BY first_token_ms`,
+    )
+    .all(...params) as unknown as Array<{
+    k: string;
+    harness: HarnessId;
+    first_token_ms: number;
+  }>;
+  const grouped = new Map<
+    string,
+    Array<{ firstTokenMs: number; harness: HarnessId; status: "success" }>
+  >();
+  for (const row of rows) {
+    const bucket = grouped.get(row.k) ?? [];
+    bucket.push({ firstTokenMs: row.first_token_ms, harness: row.harness, status: "success" });
+    grouped.set(row.k, bucket);
+  }
+  return new Map(
+    Array.from(grouped, ([key, bucket]) => [key, collectFirstTokenMedians(bucket)]),
+  );
+}
+
+function summaryFromRow(
+  row: SummaryRow,
+  creditsByHarness: UsageSummary["creditsByHarness"],
+  firstToken: FirstTokenMedians = collectFirstTokenMedians([]),
+): UsageSummary {
   return {
     requests: row.requests,
     credits: row.credits,
@@ -211,6 +259,8 @@ function summaryFromRow(row: SummaryRow, creditsByHarness: UsageSummary["credits
     successRate: row.requests > 0 ? row.successful / row.requests : 0,
     speedOutputTokens: row.speed_output_tokens,
     speedDurationMs: row.speed_duration_ms,
+    firstTokenMedianMs: firstToken.firstTokenMedianMs,
+    estFirstTokenMedianMs: firstToken.estFirstTokenMedianMs,
   };
 }
 
@@ -236,7 +286,8 @@ function querySummary(db: DatabaseSync, where: string, params: Array<string | nu
        GROUP BY harness`,
     )
     .all(...params) as unknown as Array<{ harness: HarnessId; credits: number }>;
-  return summaryFromRow(row, creditsByHarnessFromRows(creditRows));
+  const firstToken = firstTokenMedians(db, where, params).get("") ?? undefined;
+  return summaryFromRow(row, creditsByHarnessFromRows(creditRows), firstToken);
 }
 
 const GROUP_DIMENSIONS: Record<GroupDimension, string> = {
@@ -274,6 +325,7 @@ function queryGroups(
       group.set(creditRow.harness, creditRow.credits);
       creditTotals.set(creditRow.group_key, group);
     }
+    const firstTokenByKey = firstTokenMedians(db, where, params, column);
     const stats: GroupStat[] = rows.map((row) => {
       const totals = creditTotals.get(row.group_key);
       const creditsByHarness = HARNESS_OPTIONS.flatMap((option) => {
@@ -282,7 +334,7 @@ function queryGroups(
       });
       return {
         key: row.group_key,
-        ...summaryFromRow(row, creditsByHarness),
+        ...summaryFromRow(row, creditsByHarness, firstTokenByKey.get(row.group_key)),
         lastUsed: row.last_used,
       };
     });

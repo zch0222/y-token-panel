@@ -172,7 +172,8 @@ Base URL 命中已知供应商时自动识别模板，其余按所选模板查�
 - **总 Tokens**：优先使用原始 total_tokens。CodeBuddy 的输入 Tokens 已包含缓存读取，因此不会再次累加缓存 Tokens。
 - **缓存命中率**：缓存读取 Tokens ÷ 输入 Tokens。
 - **Credits**：原始 credit 字段的合计，不是美元金额；缺失时显示为 —。
-- **成功率**：根据会话记录状态统计，不推测日志中没有的 HTTP 状态码、首字时间或生成速度。
+- **成功率**：根据会话记录状态统计，不推测日志中没有的 HTTP 状态码或生成速度。
+- **首字时间（TTFT）**：请求发出到上游开始输出的等待。ZCode（`time_to_first_token_ms`）、KCode（`llmFirstTokenLatencyMs`）、Antigravity（原生库首字 Duration）、DSH（stream 最早分片时刻 − `step/start`）是各自本地记录的原生计时；Claude Code（`thinkingDurationMs` 推导，仅思考开头的回复）与 Codex（`item_completed.started_at_ms`，仅新版日志）按时间戳推算，展示带 ≈（起点含客户端组装请求的时间，系统性偏高）；CodeBuddy / WorkBuddy / Qoder / Pi Desktop 的本地会话没有首字计时，显示 —。分组行取中位数，精确口径优先、没有才回落估算口径。
 
 ## 检查
 

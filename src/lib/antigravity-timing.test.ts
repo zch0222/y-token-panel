@@ -111,8 +111,8 @@ describe("readGenerationTimings", () => {
     );
     expect(readGenerationTimings(dbPath)).toEqual(
       new Map([
-        [1, 8013],
-        [5, 6734],
+        [1, { durationMs: 8013, firstTokenMs: 7355 }],
+        [5, { durationMs: 6734, firstTokenMs: 6145 }],
       ]),
     );
   });
@@ -131,7 +131,9 @@ describe("readGenerationTimings", () => {
       ],
       [{ idx: 0, data: generationMetadata(1000, 500) }],
     );
-    expect(readGenerationTimings(dbPath)).toEqual(new Map([[1, 1500]]));
+    expect(readGenerationTimings(dbPath)).toEqual(
+      new Map([[1, { durationMs: 1500, firstTokenMs: 1000 }]]),
+    );
   });
 
   it("库不存在或不是 SQLite 时返回空表而不抛错", async () => {
@@ -215,12 +217,12 @@ describe("Antigravity 速度口径（对齐 cc-switch agy_session）", () => {
     });
   }
 
-  it("整段耗时含首字；输出 ≥200 且耗时 ≥1s 才算速度", () => {
+  it("整段耗时含首字；输出 ≥200 且耗时 ≥1s 才算速度；首字时间随计时透传", () => {
     const content = [line(1, 400), line(2, 150), line(3, 400)].join("\n");
-    const timings = new Map([
-      [1, 2000],
-      [2, 2000],
-      [3, 900],
+    const timings = new Map<number, { durationMs: number; firstTokenMs: number }>([
+      [1, { durationMs: 2000, firstTokenMs: 800 }],
+      [2, { durationMs: 2000, firstTokenMs: 1200 }],
+      [3, { durationMs: 900, firstTokenMs: 400 }],
     ]);
     const records = parseAntigravityTranscript(content, "conv", "demo", { timings });
     const byId = new Map(records.map((record) => [record.id, record]));
@@ -232,5 +234,7 @@ describe("Antigravity 速度口径（对齐 cc-switch agy_session）", () => {
       speedOutputTokens: 400,
       speedDurationMs: 2000,
     });
+    expect(byId.get("antigravity:conv:1")?.firstTokenMs).toBe(800);
+    expect(byId.get("antigravity:conv:3")?.firstTokenMs).toBe(400);
   });
 });

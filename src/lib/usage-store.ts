@@ -25,7 +25,7 @@ import {
   type UsageView,
 } from "@/lib/usage";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const APPLICATION_ID = 0x59545031; // "YTP1"，防止误打开其他应用的 SQLite 文件。
 const DEFAULT_DATABASE_PATH = path.join(".data", "usage.sqlite");
 const INTERRUPTED_SYNC_ERROR = "上次同步在服务重启时中断；已保留最后成功快照。";
@@ -137,6 +137,7 @@ function validateUsageForStorage(usage: UsageResponse): void {
       record.reportedCredits,
       record.contextUsageRatio,
       record.estimatedDurationMs,
+      record.firstTokenMs,
     ]) {
       if (value !== undefined) assertFinite(value, record.id);
     }
@@ -209,6 +210,42 @@ export class UsageStore {
       if (existing) throw new Error("拒绝在未标记的既有 SQLite 数据库上执行用量迁移");
     }
 
+    // v1/v2 → v3：v1 先补 v2 的外键索引；usage_records 增加 first_token_ms。
+    // 增量 reader 只有在重扫文件时才会填充该列，清空全部文件游标触发一次
+    // 来源级重建（下一轮 sync 全量重读）。
+    if (version === 1 || version === 2) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        if (version === 1) {
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_usage_dedup_record_row_id ON usage_dedup(record_row_id)",
+          );
+        }
+        // 降级复测等场景下列可能已存在；重复 ALTER 会报错，先查再补。
+        const hasFirstTokenColumn = this.db
+          .prepare("SELECT 1 FROM pragma_table_info('usage_records') WHERE name = 'first_token_ms'")
+          .get();
+        if (hasFirstTokenColumn === undefined) {
+          this.db.exec("ALTER TABLE usage_records ADD COLUMN first_token_ms REAL");
+        }
+        this.db.exec("DELETE FROM session_log_sync");
+        this.db.exec(
+          `INSERT INTO usage_schema_migrations (version, applied_at)
+           VALUES (${SCHEMA_VERSION}, ${Date.now()})
+           ON CONFLICT(version) DO NOTHING`,
+        );
+        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw new Error(`用量数据库迁移到 v3 失败，已回滚: ${errorMessage(error)}`, {
+          cause: error,
+        });
+      }
+      this.validateSchema();
+      return;
+    }
+
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec(`
@@ -241,6 +278,7 @@ export class UsageStore {
           billable INTEGER CHECK (billable IN (0, 1) OR billable IS NULL),
           context_usage_ratio REAL,
           estimated_duration_ms REAL,
+          first_token_ms REAL,
           status TEXT NOT NULL CHECK (status IN ('success', 'error')),
           UNIQUE (harness, record_id)
         );
@@ -339,7 +377,7 @@ export class UsageStore {
         "cache_read_tokens", "cache_creation_tokens", "total_tokens",
         "input_token_semantics", "has_token_usage", "credits", "has_credit",
         "reported_credits", "billable", "context_usage_ratio", "estimated_duration_ms",
-        "status",
+        "first_token_ms", "status",
       ],
       usage_sources: [
         "harness", "record_count", "scanned_files", "skipped_files", "source",
@@ -597,8 +635,8 @@ export class UsageStore {
             timestamp_ms, input_tokens, output_tokens, cache_read_tokens,
             cache_creation_tokens, total_tokens, input_token_semantics,
             has_token_usage, credits, has_credit, reported_credits, billable,
-            context_usage_ratio, estimated_duration_ms, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            context_usage_ratio, estimated_duration_ms, first_token_ms, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const insertDedup = this.db.prepare(`
           INSERT INTO usage_dedup (harness, dedup_key, record_row_id, created_at)
@@ -629,6 +667,7 @@ export class UsageStore {
             record.billable === undefined ? null : record.billable ? 1 : 0,
             nullableNumber(record.contextUsageRatio),
             nullableNumber(record.estimatedDurationMs),
+            nullableNumber(record.firstTokenMs),
             record.status,
           );
           insertDedup.run(record.harness, record.id, result.lastInsertRowid, now);

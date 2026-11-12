@@ -44,6 +44,7 @@ interface AssistantOptions {
   usage?: Record<string, number> | null;
   cwd?: string;
   sessionId?: string;
+  thinkingDurationMs?: number;
 }
 
 function assistantLine(options: AssistantOptions): Record<string, unknown> {
@@ -52,7 +53,13 @@ function assistantLine(options: AssistantOptions): Record<string, unknown> {
     id: options.messageId ?? `msg_${options.uuid}`,
     type: "message",
     role: "assistant",
-    content: [{ type: "text", text: "…" }],
+    // 首块是思考块时才有 thinkingDurationMs 语义（claude.exe 只在 thinking 块上写）。
+    content: [
+      ...(options.thinkingDurationMs !== undefined
+        ? [{ type: "thinking", thinking: "…", signature: "…" }]
+        : []),
+      { type: "text", text: "…" },
+    ],
     stop_reason: options.stopReason === undefined ? "end_turn" : options.stopReason,
     stop_sequence: null,
   };
@@ -65,6 +72,9 @@ function assistantLine(options: AssistantOptions): Record<string, unknown> {
     message,
     ...(options.apiBlockIndex !== undefined
       ? { apiBlockIndex: options.apiBlockIndex }
+      : {}),
+    ...(options.thinkingDurationMs !== undefined
+      ? { thinkingDurationMs: options.thinkingDurationMs }
       : {}),
     requestId: `req_${options.uuid}`,
     type: "assistant",
@@ -461,6 +471,37 @@ describe("耗时估算（对齐 cc-switch session_usage.rs）", () => {
     ]);
     const [record] = parseClaudeTranscriptFile(content, CONTEXT);
     expect(record.estimatedDurationMs).toBe(4 * SECOND);
+  });
+
+  it("首字 = 首块思考块开始时刻（块时间戳 − thinkingDurationMs）− 请求起点", () => {
+    const content = jsonl([
+      userLine("u1", T0),
+      // 首块 5s 时刻写完，思考耗时 3s → 首字在 T0 + 2s。
+      assistantLine({
+        uuid: "b0",
+        parentUuid: "u1",
+        timestampMs: T0 + 5 * SECOND,
+        apiBlockIndex: 0,
+        thinkingDurationMs: 3 * SECOND,
+      }),
+    ]);
+    const [record] = parseClaudeTranscriptFile(content, CONTEXT);
+    expect(record.firstTokenMs).toBe(2 * SECOND);
+  });
+
+  it("没有 thinkingDurationMs（非思考开头或旧版日志）时推不出首字", () => {
+    const content = jsonl([
+      userLine("u1", T0),
+      assistantLine({
+        uuid: "b0",
+        parentUuid: "u1",
+        timestampMs: T0 + 4 * SECOND,
+        apiBlockIndex: 0,
+      }),
+    ]);
+    const [record] = parseClaudeTranscriptFile(content, CONTEXT);
+    expect(record.estimatedDurationMs).toBe(4 * SECOND);
+    expect(record.firstTokenMs).toBeUndefined();
   });
 
   it("父行不在链上（链断裂）时不估", () => {

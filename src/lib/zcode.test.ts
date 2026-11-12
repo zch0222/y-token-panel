@@ -169,6 +169,26 @@ describe("parseZcodeUsageRow", () => {
     });
   });
 
+  it("首字：优先 time_to_first_token_ms，缺失时 first_token_at − started_at，窗口外丢弃", () => {
+    expect(
+      parseZcodeUsageRow(row({ time_to_first_token_ms: 3_154 }))?.firstTokenMs,
+    ).toBe(3_154);
+    expect(
+      parseZcodeUsageRow(
+        row({ time_to_first_token_ms: null, first_token_at: 1_794_065_396_672 }),
+      )?.firstTokenMs,
+    ).toBe(3_154);
+    // 晚于整段耗时：不可信，丢弃。
+    expect(
+      parseZcodeUsageRow(row({ time_to_first_token_ms: 99_999 }))?.firstTokenMs,
+    ).toBeUndefined();
+    // 非正或缺失：丢弃。
+    expect(
+      parseZcodeUsageRow(row({ time_to_first_token_ms: 0 }))?.firstTokenMs,
+    ).toBeUndefined();
+    expect(parseZcodeUsageRow(row())?.firstTokenMs).toBeUndefined();
+  });
+
   it("provider_total 缺失时使用 computed_total", () => {
     const record = parseZcodeUsageRow(
       row({ provider_total_tokens: null, computed_total_tokens: 82_811 }),

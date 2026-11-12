@@ -2,7 +2,8 @@ import "server-only";
 import { DatabaseSync } from "node:sqlite";
 
 /**
- * 从 Antigravity 原生会话库（<root>/conversations/<id>.db）读取每次生成的精确耗时。
+ * 从 Antigravity 原生会话库（<root>/conversations/<id>.db）读取每次生成的精确
+ * 耗时与首字时间。
  *
  * 转录（transcript.jsonl）只有秒级 created_at，没有完成时刻，无法估速度；原生库
  * 里有每个 generation 的 google.protobuf.Duration：
@@ -10,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
  *   （proto3 默认值 0 会被省略，此时对应 gen_metadata.idx = 0）；
  * - gen_metadata.data 字段 1 是响应元数据，字段 11 = 首字等待，字段 12 = 流式
  *   时长，两者相加 = 请求起点到流结束（含首字等待），与转录相邻 step 的时间差
- *   一致。
+ *   一致（cc-switch native_models.rs Timing 同款）。
  * 本机 5 个会话 184 条 PLANNER_RESPONSE 全部能取到该耗时。
  *
  * CHECKPOINT（step_type=23）虽然也有字段 20，但实测它指向的是**下一条**
@@ -19,6 +20,12 @@ import { DatabaseSync } from "node:sqlite";
  *
  * 库被占用、schema 不同或数据损坏时返回空表，不影响用量导入。
  */
+
+/** 一次生成的精确计时：整段耗时（含首字）与首字等待（毫秒）。 */
+export interface AntigravityGenerationTiming {
+  durationMs: number;
+  firstTokenMs: number;
+}
 
 const PLANNER_STEP_TYPE = 15;
 
@@ -131,7 +138,7 @@ function generationIndex(metadata: Buffer): number | undefined {
 }
 
 /** gen_metadata.data → 首字等待 + 流式时长（毫秒）。 */
-function generationDuration(data: Buffer): number | undefined {
+function generationTiming(data: Buffer): AntigravityGenerationTiming | undefined {
   const response = firstMessage(data, 1);
   if (!response) return undefined;
   const firstToken = firstMessage(response, 11);
@@ -141,12 +148,15 @@ function generationDuration(data: Buffer): number | undefined {
   const rest = durationMillis(streaming);
   if (first === undefined || rest === undefined) return undefined;
   const total = first + rest;
-  return Number.isSafeInteger(total) && total > 0 ? total : undefined;
+  if (!Number.isSafeInteger(total) || total <= 0) return undefined;
+  return { durationMs: total, firstTokenMs: first };
 }
 
-/** 单个会话库的 step 索引 → 精确耗时（毫秒）；打不开或解析失败返回空表。 */
-export function readGenerationTimings(dbPath: string): Map<number, number> {
-  const timings = new Map<number, number>();
+/** 单个会话库的 step 索引 → 精确计时；打不开或解析失败返回空表。 */
+export function readGenerationTimings(
+  dbPath: string,
+): Map<number, AntigravityGenerationTiming> {
+  const timings = new Map<number, AntigravityGenerationTiming>();
   let db: DatabaseSync;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
@@ -158,7 +168,7 @@ export function readGenerationTimings(dbPath: string): Map<number, number> {
     const steps = db
       .prepare("SELECT idx, metadata FROM steps WHERE step_type = ?")
       .all(PLANNER_STEP_TYPE) as unknown as Array<{ idx?: unknown; metadata?: unknown }>;
-    const generations = new Map<number, number | undefined>();
+    const generations = new Map<number, AntigravityGenerationTiming | undefined>();
     const generationQuery = db.prepare("SELECT data FROM gen_metadata WHERE idx = ?");
 
     for (const step of steps) {
@@ -169,18 +179,18 @@ export function readGenerationTimings(dbPath: string): Map<number, number> {
       if (generation === undefined) continue;
 
       if (!generations.has(generation)) {
-        let duration: number | undefined;
+        let timing: AntigravityGenerationTiming | undefined;
         try {
           const row = generationQuery.get(generation) as { data?: unknown } | undefined;
           const data = asBuffer(row?.data);
-          if (data) duration = generationDuration(data);
+          if (data) timing = generationTiming(data);
         } catch {
-          duration = undefined;
+          timing = undefined;
         }
-        generations.set(generation, duration);
+        generations.set(generation, timing);
       }
-      const duration = generations.get(generation);
-      if (duration !== undefined) timings.set(step.idx, duration);
+      const timing = generations.get(generation);
+      if (timing !== undefined) timings.set(step.idx, timing);
     }
   } catch {
     // 库被占用、表结构不同或数据损坏：不提供耗时，用量照常。

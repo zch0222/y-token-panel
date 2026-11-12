@@ -53,6 +53,7 @@ function assistantMessage(options: {
   model?: string;
   provider?: string;
   usage?: Record<string, unknown>;
+  stream?: unknown;
   omitUsage?: boolean;
 }) {
   const {
@@ -69,6 +70,7 @@ function assistantMessage(options: {
       cacheWriteTokens: 0,
       totalTokens: 11160,
     },
+    stream,
     omitUsage = false,
   } = options;
   const data: Record<string, unknown> = {
@@ -82,6 +84,7 @@ function assistantMessage(options: {
     },
   };
   if (!omitUsage) data.usage = usage;
+  if (stream !== undefined) data.stream = stream;
   return { type: "assistant/message", seq: 2, time, data };
 }
 
@@ -205,6 +208,48 @@ describe("parseDshSessionLog（字段映射回归）", () => {
     expect(record!.hasCredit).toBe(false);
     expect(record!.estimatedDurationMs).toBe(4200);
     expect(record!.status).toBe("success");
+  });
+
+  it("首字 = stream 里最早的 time/time0 − step/start，超出耗时窗口则丢弃", () => {
+    // 本机真实形态：打包 run 的 time0 与 chunk 的 time 混排。
+    const stream = [
+      { type: "chunk", time: BASE_MS + 3000, chunk: { type: "block-start", index: 0 } },
+      { type: "reasoning-chunks", time0: BASE_MS + 3000, index: 0, dt: [1, 2], texts: ["a", "b"] },
+      { type: "chunk", time: BASE_MS + 4100, chunk: { type: "block-end", index: 0 } },
+    ];
+    const [record] = parseDshSessionLog(
+      jsonl(
+        header(),
+        stepStart(1, 1, BASE_MS),
+        assistantMessage({ time: BASE_MS + 4200, stream }),
+      ),
+      "p",
+      "s",
+    );
+    expect(record!.firstTokenMs).toBe(3000);
+
+    // 首字早于 step/start（起点取错）：宁可不估。
+    const [invalid] = parseDshSessionLog(
+      jsonl(
+        header(),
+        stepStart(1, 1, BASE_MS),
+        assistantMessage({
+          time: BASE_MS + 4200,
+          stream: [{ type: "chunk", time: BASE_MS - 100, chunk: {} }],
+        }),
+      ),
+      "p",
+      "s",
+    );
+    expect(invalid!.firstTokenMs).toBeUndefined();
+
+    // 没有 stream 的旧记录不带首字。
+    const [noStream] = parseDshSessionLog(
+      jsonl(header(), stepStart(1, 1, BASE_MS), assistantMessage({ time: BASE_MS + 4200 })),
+      "p",
+      "s",
+    );
+    expect(noStream!.firstTokenMs).toBeUndefined();
   });
 
   it("totalTokens 缺失时按四项相加（TokenUsage 文档口径）", () => {

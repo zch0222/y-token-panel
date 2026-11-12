@@ -186,6 +186,7 @@ export function canonicalRecord(record: UsageRecord): UsageRecord {
     ...(record.estimatedDurationMs === undefined
       ? {}
       : { estimatedDurationMs: record.estimatedDurationMs }),
+    ...(record.firstTokenMs === undefined ? {} : { firstTokenMs: record.firstTokenMs }),
     status: record.status,
   };
 }

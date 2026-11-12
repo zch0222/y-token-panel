@@ -1,3 +1,4 @@
+import { estimatedFirstTokenMs } from "@/lib/first-token";
 import {
   deriveProvider,
   type UsageRecord,
@@ -91,6 +92,7 @@ export interface CodexParsedEvent {
   model: string;
   cwd?: string;
   estimatedDurationMs?: number;
+  firstTokenMs?: number;
 }
 
 export interface CodexRolloutMeta {
@@ -491,7 +493,7 @@ export class CodexRequestTimer {
   /** 最后一个输出项之后出现的工具结果里最晚的一个；之后再有输出项就清空。 */
   private toolOutputAfterModelOutputMs?: number;
   private usageRecord?: { timestampMs: number; usage: CodexTokenUsage };
-  /** 这次请求里最早开始生成的输出项的时刻（首字；本面板只用 latency，保留推导）。 */
+  /** 这次请求里最早开始生成的输出项的时刻（item_completed.started_at_ms）。 */
   private firstOutputMs?: number;
 
   observeLine(line: string): void {
@@ -560,15 +562,16 @@ export class CodexRequestTimer {
   }
 
   /**
-   * 遇到一次有用量的 token_count：结算这次请求的耗时，并把此刻记成下一次
-   * 请求的起点。`last` 是这次请求自己的精确用量，用来确认 token_usage_record
-   * 说的是同一次请求。推不出合理窗口返回 undefined。
+   * 遇到一次有用量的 token_count：结算这次请求的耗时与首字，并把此刻记成
+   * 下一次请求的起点。`last` 是这次请求自己的精确用量，用来确认
+   * token_usage_record 说的是同一次请求。推不出合理窗口返回 undefined。
    */
   finishRequest(
     tokenCountMs: number | undefined,
     last: CodexTokenUsage | undefined,
-  ): number | undefined {
+  ): CodexEstimatedTiming | undefined {
     const startMs = this.requestStartMs ?? this.lastBoundaryMs;
+    const firstOutputMs = this.firstOutputMs;
     const record = this.usageRecord;
     this.usageRecord = undefined;
     const recordEndMs =
@@ -603,8 +606,20 @@ export class CodexRequestTimer {
     ) {
       return undefined;
     }
-    return latency;
+    return {
+      latencyMs: latency,
+      firstTokenMs:
+        firstOutputMs !== undefined
+          ? estimatedFirstTokenMs(startMs, firstOutputMs, latency)
+          : undefined,
+    };
   }
+}
+
+/** finishRequest 的结算产物：耗时（含首字等待）与可推出时的首字时间。 */
+export interface CodexEstimatedTiming {
+  latencyMs: number;
+  firstTokenMs?: number;
 }
 
 function laterOf(current: number | undefined, next: number | undefined): number | undefined {
@@ -1037,13 +1052,16 @@ export function parseCodexRollout(
           delta.cachedInputTokens > 0 ||
           delta.outputTokens > 0);
       let estimatedDurationMs: number | undefined;
+      let firstTokenMs: number | undefined;
       let requestKey: string | undefined;
       if (billable && delta) {
         hasBillableTokens = true;
         eventIndex += 1;
         requestKey = String(eventIndex);
         // 重复快照不是一次请求，不参与计时。
-        estimatedDurationMs = timer.finishRequest(timestampMs, last);
+        const timing = timer.finishRequest(timestampMs, last);
+        estimatedDurationMs = timing?.latencyMs;
+        firstTokenMs = timing?.firstTokenMs;
       }
 
       tokenEvents.push({
@@ -1055,6 +1073,7 @@ export function parseCodexRollout(
         model: currentModel,
         cwd: currentCwd,
         estimatedDurationMs,
+        firstTokenMs,
       });
     }
   }
@@ -1209,6 +1228,7 @@ export function codexEventsToRecords(
       credits: 0,
       hasCredit: false,
       estimatedDurationMs: event.estimatedDurationMs,
+      ...(event.firstTokenMs === undefined ? {} : { firstTokenMs: event.firstTokenMs }),
       status: "success",
     });
   }
