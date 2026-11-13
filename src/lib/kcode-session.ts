@@ -31,6 +31,15 @@ import {
  * - 子 agent（agents/agent-N 等）：回复不进人类投影层，用量直接取
  *   context.append_loop_event(event.type === "step.end") 的 event.usage；
  *   父 agent 的 subagent 汇总不含 token，不会重复计数（cc-switch 注释同款）。
+ * - llm.request.modelAlias 是 config.toml models 表的键（`<provider>/<model>`），
+ *   也是区分供应商的唯一可靠字段：内置 managed:kimi-code 的别名固定以
+ *   `kimi-code/` 前缀书写（bundle 内 aliasPrefix 注释：普通 provider 用
+ *   `${providerId}/`，managed 手写条目用 `kimi-code/` 与 OAuth 下发形态对齐）。
+ *   别名前缀不是 kimi-code 的即为第三方 provider（config.toml 里用户自建的
+ *   [providers.X]，如本机的 "Kimi For Coding" API key 服务）：这些请求的
+ *   model 用完整别名、provider 用前缀（kcode 自己的 provider 名，同 ZCode
+ *   的 providerId 口径），不再与订阅（managed）同名模型混在一起——同一
+ *   裸模型名（k3.1-pro）可同时由 managed 与第三方 provider 提供。
  * - 请求元数据按事件流重建（cc-switch kimi_session.rs 的 RequestIndex 移植）：
  *   step.begin（uuid、turnId.step）开窗 → llm.request（agentId 归属、kind ===
  *   "loop"、turnStep 匹配时更新 model 与起点时间；重试覆盖前一次）→
@@ -82,6 +91,7 @@ export interface KcodeWireRecord {
   agentId?: string;
   kind?: string;
   model?: string;
+  modelAlias?: string;
   turnStep?: string;
   time?: number;
   event?: KcodeLoopEvent;
@@ -127,6 +137,45 @@ function kcodeModelName(value: unknown): string | undefined {
   return !name || name === "agent-loop" || name === "unknown" ? undefined : name;
 }
 
+/** config.toml models 表的键（`<provider>/<model>`）；空串不可用。 */
+function kcodeAliasName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const alias = value.trim();
+  return alias === "" ? undefined : alias;
+}
+
+/** 内置 managed:kimi-code 的别名前缀（bundle 内 aliasPrefix 规则）。 */
+const KCODE_MANAGED_ALIAS_PREFIX = "kimi-code";
+
+/** 模型归属决策结果：面板的 model 标签与 provider 字段。 */
+export interface KcodeModelAttribution {
+  model: string;
+  provider: string;
+}
+
+/**
+ * model/modelAlias → 面板标签。别名前缀不是 kimi-code 的是第三方 provider
+ * （用户在 kcode 里自建的服务）：model 用完整别名、provider 用前缀（kcode
+ * 自己的 provider 名，同 ZCode 的 providerId 口径）。managed 或没有别名时
+ * 维持原口径：裸模型名 + deriveProvider。
+ */
+export function kcodeModelAttribution(
+  model: string | undefined,
+  modelAlias: string | undefined,
+): KcodeModelAttribution {
+  if (modelAlias !== undefined) {
+    const slash = modelAlias.indexOf("/");
+    if (slash > 0) {
+      const provider = modelAlias.slice(0, slash).trim();
+      if (provider !== "" && provider !== KCODE_MANAGED_ALIAS_PREFIX) {
+        return { model: modelAlias, provider };
+      }
+    }
+  }
+  const resolved = model ?? "未知模型";
+  return { model: resolved, provider: deriveProvider(resolved, "KCode") };
+}
+
 /** step.end 上的原生计时：非负且不超过 1 小时才可信。 */
 function kcodeWireDurationMs(value: unknown): number | undefined {
   if (
@@ -150,6 +199,7 @@ function kcodeUsageNumber(value: unknown): number {
 
 interface KcodeRequestInfo {
   model?: string;
+  modelAlias?: string;
   latencyMs: number;
   firstTokenMs?: number;
   /** 该 step 最后一次 llm.request 的起点；提交消息带的是批量 commit 时间。 */
@@ -160,6 +210,7 @@ interface KcodeStepState {
   uuid: string;
   turnStep?: string;
   model?: string;
+  modelAlias?: string;
   requestMs?: number;
   responseMs?: number;
   hasTools: boolean;
@@ -214,6 +265,7 @@ export class KcodeRequestIndex {
     }
     // 重试覆盖失败的尝试；原生计时属于最后一次尝试（非法值同样覆盖为空）。
     step.model = kcodeModelName(record.model);
+    step.modelAlias = kcodeAliasName(record.modelAlias);
     step.requestMs = kcodeTimestampMs(record.time);
     step.responseMs = undefined;
     step.hasTools = false;
@@ -239,6 +291,7 @@ export class KcodeRequestIndex {
           uuid: event.uuid,
           turnStep,
           model: undefined,
+          modelAlias: undefined,
           requestMs: undefined,
           responseMs: undefined,
           hasTools: false,
@@ -289,6 +342,7 @@ export class KcodeRequestIndex {
           latencyMs: 0,
         };
         if (step?.model !== undefined) info.model = step.model;
+        if (step?.modelAlias !== undefined) info.modelAlias = step.modelAlias;
         if (step?.requestMs !== undefined) info.requestMs = step.requestMs;
         if (latencyMs > 0) {
           info.latencyMs = latencyMs;
@@ -438,7 +492,7 @@ export function parseKcodeWireFile(
 
 function baseRecord(
   tokens: NonNullable<ReturnType<typeof kcodeUsageTokens>>,
-  model: string,
+  attribution: KcodeModelAttribution,
   id: string,
   requestId: string,
   timestamp: number,
@@ -452,8 +506,8 @@ function baseRecord(
     sessionId: context.sessionId,
     harness: "kcode",
     project: context.project,
-    model,
-    provider: deriveProvider(model, "KCode"),
+    model: attribution.model,
+    provider: attribution.provider,
     timestamp,
     inputTokens: tokens.inputTokens,
     outputTokens: tokens.outputTokens,
@@ -479,7 +533,10 @@ function messageRecord(
   const tokens = kcodeUsageTokens(item.meta.usage ?? {});
   if (!tokens) return null;
   const info = index.get(item.meta.messageId);
-  const model = index.model(item.meta) ?? "未知模型";
+  const attribution = kcodeModelAttribution(
+    index.model(item.meta),
+    info?.modelAlias,
+  );
   const messageId = item.meta.messageId || `${context.file}:${item.lineIndex}`;
   const providerKey = item.meta.model?.provider ?? "unknown";
   const latencyMs = info?.latencyMs ?? 0;
@@ -489,7 +546,7 @@ function messageRecord(
       : item.committedAt;
   return baseRecord(
     tokens,
-    model,
+    attribution,
     `kcode:${providerKey}:${messageId}`,
     messageId,
     timestamp,
@@ -510,7 +567,7 @@ function stepRecord(
   const tokens = kcodeUsageTokens(item.event.usage ?? {});
   if (!tokens) return null;
   const info = index.get(messageId);
-  const model = info?.model ?? "未知模型";
+  const attribution = kcodeModelAttribution(info?.model, info?.modelAlias);
   const latencyMs = info?.latencyMs ?? 0;
   const timestamp =
     info?.requestMs !== undefined
@@ -518,7 +575,7 @@ function stepRecord(
       : item.eventTime;
   return baseRecord(
     tokens,
-    model,
+    attribution,
     `kcode:subagent:${messageId}`,
     messageId,
     timestamp,

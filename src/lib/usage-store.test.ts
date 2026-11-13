@@ -381,7 +381,7 @@ describe("UsageStore", () => {
     });
   });
 
-  it("schema v1 升级 v3 时补外键索引、加 first_token_ms 且保留快照与记录", () => {
+  it("schema v1 升级 v4 时补外键索引、加 first_token_ms 且保留快照与记录", () => {
     const databasePath = path.join(temporaryDirectory(), "usage.sqlite");
     const first = openStore(databasePath);
     first.markSyncStarted(100);
@@ -402,7 +402,7 @@ describe("UsageStore", () => {
     expect(migrated.getSnapshotJson()).toBe(lastSuccess);
     expect(migrated.readNormalizedRecords()).toEqual(usage().records);
     const verify = new DatabaseSync(databasePath, { readOnly: true });
-    expect(verify.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(verify.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
     expect(
       verify.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_usage_dedup_record_row_id'").get(),
     ).toEqual({ name: "idx_usage_dedup_record_row_id" });
@@ -411,12 +411,12 @@ describe("UsageStore", () => {
     ).toEqual({ name: "first_token_ms" });
     expect(verify.prepare("SELECT version FROM usage_schema_migrations ORDER BY version").all()).toEqual([
       { version: 1 },
-      { version: 3 },
+      { version: 4 },
     ]);
     verify.close();
   });
 
-  it("schema v2 升级 v3 时加 first_token_ms 并清空增量游标", () => {
+  it("schema v2 升级 v4 时加 first_token_ms 并清空增量游标", () => {
     const databasePath = path.join(temporaryDirectory(), "usage.sqlite");
     const first = openStore(databasePath);
     first.markSyncStarted(100);
@@ -437,12 +437,47 @@ describe("UsageStore", () => {
 
     const migrated = openStore(databasePath);
     const verify = new DatabaseSync(databasePath, { readOnly: true });
-    expect(verify.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(verify.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
     expect(
       verify.prepare("SELECT name FROM pragma_table_info('usage_records') WHERE name = 'first_token_ms'").get(),
     ).toEqual({ name: "first_token_ms" });
     // 清空游标让增量 reader 下一轮全量重读，为存量记录回填 firstTokenMs。
     expect(verify.prepare("SELECT COUNT(*) AS n FROM session_log_sync").get()).toEqual({ n: 0 });
+    verify.close();
+    migrated.close();
+  });
+
+  it("schema v3 升级 v4 时只清 kcode 游标触发其来源重建，其他 harness 游标保留", () => {
+    const databasePath = path.join(temporaryDirectory(), "usage.sqlite");
+    const first = openStore(databasePath);
+    first.markSyncStarted(100);
+    first.commitSnapshot(usage(), 150);
+    first.close();
+
+    const v3 = new DatabaseSync(databasePath);
+    v3.exec(`
+      DELETE FROM usage_schema_migrations;
+      INSERT INTO usage_schema_migrations (version, applied_at) VALUES (3, 100);
+      PRAGMA user_version = 3;
+      INSERT INTO session_log_sync (
+        harness, file_path, file_size, mtime_ms, cursor_offset,
+        parser_state_json, tail_fingerprint, last_error, updated_at
+      ) VALUES
+        ('kcode', 'C:/w.jsonl', 10, 1, 10, NULL, 'fp-k', NULL, 1),
+        ('claude', 'C:/a.jsonl', 10, 1, 10, NULL, 'fp-c', NULL, 1);
+    `);
+    v3.close();
+
+    const migrated = openStore(databasePath);
+    const verify = new DatabaseSync(databasePath, { readOnly: true });
+    expect(verify.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+    // kcode 解析的第三方 provider 归属变更需要重读 wire 文件；claude 不受影响。
+    expect(
+      verify.prepare("SELECT harness FROM session_log_sync ORDER BY harness").all(),
+    ).toEqual([{ harness: "claude" }]);
+    expect(
+      verify.prepare("SELECT version FROM usage_schema_migrations ORDER BY version").all(),
+    ).toEqual([{ version: 3 }, { version: 4 }]);
     verify.close();
     migrated.close();
   });

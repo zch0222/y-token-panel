@@ -70,6 +70,8 @@ KCode（Kimi Code）数据源是其本地会话 wire 日志：
 
 可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致，空白值忽略并支持 `~`、`~/`、`~\` 展开）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
 
+模型归属按 `llm.request` 的 `modelAlias`（config.toml `models` 表的键 `<provider>/<model>`）区分：内置订阅（`managed:kimi-code`，别名固定 `kimi-code/` 前缀）按裸模型名归入 Moonshot AI 等供应商；第三方 provider（用户在 Kimi Code 里自建的服务，别名前缀即 provider 名）的请求以完整别名作为模型标签、provider 名作为供应商，与订阅下同名模型分开统计。
+
 Claude Code 数据源是其本地会话转录：
 
 ~~~text

@@ -25,7 +25,7 @@ import {
   type UsageView,
 } from "@/lib/usage";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const APPLICATION_ID = 0x59545031; // "YTP1"，防止误打开其他应用的 SQLite 文件。
 const DEFAULT_DATABASE_PATH = path.join(".data", "usage.sqlite");
 const INTERRUPTED_SYNC_ERROR = "上次同步在服务重启时中断；已保留最后成功快照。";
@@ -239,6 +239,31 @@ export class UsageStore {
       } catch (error) {
         this.db.exec("ROLLBACK");
         throw new Error(`用量数据库迁移到 v3 失败，已回滚: ${errorMessage(error)}`, {
+          cause: error,
+        });
+      }
+      this.validateSchema();
+      return;
+    }
+
+    // v3 → v4：KCode 解析新增第三方 provider 归属（llm.request.modelAlias 前缀
+    // 区分 managed 与第三方，model/provider 标签随之改变）。增量 reader 只在
+    // 重扫 wire 文件时才产出新标签，清空 kcode 文件游标触发一次 kcode 来源级
+    // 重建，其他 harness 的游标原样保留。
+    if (version === 3) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec("DELETE FROM session_log_sync WHERE harness = 'kcode'");
+        this.db.exec(
+          `INSERT INTO usage_schema_migrations (version, applied_at)
+           VALUES (${SCHEMA_VERSION}, ${Date.now()})
+           ON CONFLICT(version) DO NOTHING`,
+        );
+        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw new Error(`用量数据库迁移到 v4 失败，已回滚: ${errorMessage(error)}`, {
           cause: error,
         });
       }

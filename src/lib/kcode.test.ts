@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeRecords } from "@/lib/usage";
 import {
   KcodeRequestIndex,
+  kcodeModelAttribution,
   kcodeTimestampMs,
   kcodeWorkspaceLabel,
   parseKcodeProjectsFile,
@@ -414,6 +415,121 @@ describe("parseKcodeWireFile（主 agent：已提交 assistant 消息）", () =>
   });
 });
 
+describe("kcodeModelAttribution（第三方 provider 归属）", () => {
+  it("别名前缀不是 kimi-code 的按第三方归属：model 用完整别名，provider 用前缀", () => {
+    // 本机实测：用户自建 "Kimi For Coding" API key provider 的请求。
+    expect(kcodeModelAttribution("k3.1-pro", "Kimi For Coding/k3.1-pro")).toEqual({
+      model: "Kimi For Coding/k3.1-pro",
+      provider: "Kimi For Coding",
+    });
+    // 模型 id 自带斜线（如 openrouter 目录）也只按第一个斜杠切前缀。
+    expect(kcodeModelAttribution("deepseek-r1", "openrouter/deepseek/deepseek-r1")).toEqual({
+      model: "openrouter/deepseek/deepseek-r1",
+      provider: "openrouter",
+    });
+  });
+
+  it("managed 别名（kimi-code/ 前缀）与无别名维持裸模型名 + deriveProvider", () => {
+    expect(kcodeModelAttribution("k3.1-pro", "kimi-code/k3.1-pro")).toEqual({
+      model: "k3.1-pro",
+      provider: "Moonshot AI",
+    });
+    expect(kcodeModelAttribution("k3.1-pro", undefined)).toEqual({
+      model: "k3.1-pro",
+      provider: "Moonshot AI",
+    });
+    // 没有斜线 / 空前缀的别名不可判归属，按裸模型名处理。
+    expect(kcodeModelAttribution("k3", "flat-alias")).toEqual({
+      model: "k3",
+      provider: "Moonshot AI",
+    });
+    expect(kcodeModelAttribution("k3", "/no-prefix")).toEqual({
+      model: "k3",
+      provider: "Moonshot AI",
+    });
+    expect(kcodeModelAttribution(undefined, undefined)).toEqual({
+      model: "未知模型",
+      provider: "KCode",
+    });
+  });
+});
+
+describe("parseKcodeWireFile（主 agent：第三方 provider 模型）", () => {
+  it("实测形态：第三方请求按别名归属，与 managed 同名模型分开统计", () => {
+    const content = wireLines([
+      loopEvent(1_794_535_517_500, {
+        type: "step.begin",
+        uuid: "tp1",
+        turnId: "0",
+        step: 1,
+      }),
+      {
+        type: "llm.request",
+        agentId: "main",
+        kind: "loop",
+        provider: "openai",
+        model: "k3.1-pro",
+        modelAlias: "Kimi For Coding/k3.1-pro",
+        thinkingEffort: "max",
+        turnStep: "0.1",
+        time: 1_794_535_517_560,
+      },
+      loopEvent(1_794_535_525_000, {
+        type: "step.end",
+        uuid: "tp1",
+        turnId: "0",
+        step: 1,
+        messageId: "chatcmpl-3p",
+        usage: REAL_STEP_USAGE,
+        llmFirstTokenLatencyMs: 1_000,
+        llmStreamDurationMs: 5_000,
+      }),
+      messageAppended({ messageId: "chatcmpl-3p", time: 1_794_535_530_000 }),
+    ]);
+    const [record] = parseKcodeWireFile(content, MAIN_CONTEXT);
+    expect(record).toMatchObject({
+      model: "Kimi For Coding/k3.1-pro",
+      provider: "Kimi For Coding",
+      timestamp: 1_794_535_517_560 + 6_000,
+    });
+  });
+
+  it("重试切换 provider 时别名随后一次请求覆盖", () => {
+    const content = wireLines([
+      stepBegin("tp2"),
+      {
+        type: "llm.request",
+        agentId: "main",
+        kind: "loop",
+        model: "k3.1-pro",
+        modelAlias: "kimi-code/k3.1-pro",
+        turnStep: "0.1",
+        time: 1_700_000_000_000,
+      },
+      {
+        type: "llm.request",
+        agentId: "main",
+        kind: "loop",
+        model: "k3.1-pro",
+        modelAlias: "Kimi For Coding/k3.1-pro",
+        turnStep: "0.1",
+        time: 1_700_000_001_000,
+      },
+      loopEvent(1_700_000_008_000, {
+        type: "step.end",
+        uuid: "tp2",
+        messageId: "tp2-msg",
+        llmFirstTokenLatencyMs: 1_000,
+        llmStreamDurationMs: 3_000,
+      }),
+      messageAppended({ messageId: "tp2-msg", time: 1_700_000_010_000 }),
+    ]);
+    const [record] = parseKcodeWireFile(content, MAIN_CONTEXT);
+    expect(record.model).toBe("Kimi For Coding/k3.1-pro");
+    expect(record.provider).toBe("Kimi For Coding");
+  });
+});
+
 describe("parseKcodeWireFile（子 agent：step.end 用量）", () => {
   const SUB_CONTEXT = { ...MAIN_CONTEXT, agent: "agent-0" };
 
@@ -421,6 +537,7 @@ describe("parseKcodeWireFile（子 agent：step.end 用量）", () => {
     uuid: string;
     messageId?: string;
     model?: string;
+    modelAlias?: string;
     start: number;
     usage?: Record<string, unknown>;
     first?: number;
@@ -439,6 +556,7 @@ describe("parseKcodeWireFile（子 agent：step.end 用量）", () => {
         agentId,
         kind: "loop",
         model: options.model,
+        modelAlias: options.modelAlias,
         turnStep: "0.1",
         time: options.start,
       },
@@ -498,6 +616,25 @@ describe("parseKcodeWireFile（子 agent：step.end 用量）", () => {
       ...subStep({ uuid: "x2", start: 1_700_000_010_000, usage: { inputOther: 0, output: 0, inputCacheCreation: 0 } }),
     ]);
     expect(parseKcodeWireFile(content, SUB_CONTEXT)).toHaveLength(0);
+  });
+
+  it("第三方 provider 的别名同样决定子 agent 记录的归属", () => {
+    const content = wireLines([
+      ...subStep({
+        uuid: "c3",
+        messageId: "child-3",
+        model: "k3.1-pro",
+        modelAlias: "Kimi For Coding/k3.1-pro",
+        start: 1_700_000_002_000,
+        first: 200,
+        stream: 800,
+      }),
+    ]);
+    const [record] = parseKcodeWireFile(content, SUB_CONTEXT);
+    expect(record).toMatchObject({
+      model: "Kimi For Coding/k3.1-pro",
+      provider: "Kimi For Coding",
+    });
   });
 
   it("请求起点未知时时间退回 step.end 事件时刻", () => {
