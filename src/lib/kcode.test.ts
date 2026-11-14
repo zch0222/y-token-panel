@@ -4,8 +4,10 @@ import {
   KcodeRequestIndex,
   kcodeTimestampMs,
   kcodeWorkspaceLabel,
+  parseKcodeConfigFile,
   parseKcodeProjectsFile,
   parseKcodeWireFile,
+  resolveKcodeModelAndProvider,
   resolveKcodeProjectName,
   type KcodeWireRecord,
 } from "@/lib/kcode-session";
@@ -595,5 +597,290 @@ describe("summarizeRecords 与 kcode 记录", () => {
     expect(speedSummary.speedDurationMs).toBe(4_000);
     // 缓存命中率 = cacheRead ÷（fresh 输入 + 缓存读写）。
     expect(speedSummary.cacheRate).toBe(0);
+  });
+});
+
+describe("parseKcodeConfigFile 与第三方供应商解析", () => {
+  it("解析双引号/单引号/裸键 [models.*]，忽略 [providers.*] 等其他区块与注释", () => {
+    const config = parseKcodeConfigFile(
+      [
+        'default_model = "Kimi For Coding/k3.1-pro"',
+        "",
+        '[providers."Kimi For Coding"]',
+        'type = "kimi"',
+        'api_key = "sk-secret-do-not-store"',
+        "",
+        '[models."Kimi For Coding/k3.1-pro"] # 行尾注释',
+        'provider = "Kimi For Coding" # 自定义名称',
+        'model = "k3.1-pro"',
+        "max_context_size = 262144",
+        "",
+        "[models.'openrouter/anthropic/claude-sonnet-4']",
+        "provider = 'openrouter'",
+        "model = 'anthropic/claude-sonnet-4'",
+        "",
+        "[models.work_proxy]",
+        'provider = "Relay #1"',
+        'model = "gpt-4.1"',
+        "",
+        '[models."kimi-code/k3.1-pro"]',
+        'provider = "managed:kimi-code"',
+        'model = "k3.1-pro"',
+      ].join("\r\n"),
+    );
+
+    expect(config.size).toBe(4);
+    expect(config.get("Kimi For Coding/k3.1-pro")).toEqual({
+      alias: "Kimi For Coding/k3.1-pro",
+      provider: "Kimi For Coding",
+      model: "k3.1-pro",
+    });
+    expect(config.get("openrouter/anthropic/claude-sonnet-4")).toEqual({
+      alias: "openrouter/anthropic/claude-sonnet-4",
+      provider: "openrouter",
+      model: "anthropic/claude-sonnet-4",
+    });
+    expect(config.get("work_proxy")).toEqual({
+      alias: "work_proxy",
+      provider: "Relay #1",
+      model: "gpt-4.1",
+    });
+    expect(config.get("kimi-code/k3.1-pro")).toEqual({
+      alias: "kimi-code/k3.1-pro",
+      provider: "managed:kimi-code",
+      model: "k3.1-pro",
+    });
+  });
+
+  it("官方渠道回落 deriveProvider，第三方供应商直接保留配置名或 alias 前缀", () => {
+    const config = parseKcodeConfigFile(
+      [
+        '[models."kimi-code/k3.1-pro"]',
+        'provider = "managed:kimi-code"',
+        'model = "k3.1-pro"',
+        '[models."Kimi For Coding/k3.1-pro"]',
+        'provider = "Kimi For Coding"',
+        'model = "k3.1-pro"',
+      ].join("\n"),
+    );
+
+    expect(
+      resolveKcodeModelAndProvider({
+        modelAlias: "kimi-code/k3.1-pro",
+        configuredModels: config,
+      }),
+    ).toEqual({ model: "k3.1-pro", provider: "Moonshot AI" });
+
+    expect(
+      resolveKcodeModelAndProvider({
+        modelAlias: "Kimi For Coding/k3.1-pro",
+        configuredModels: config,
+      }),
+    ).toEqual({ model: "k3.1-pro", provider: "Kimi For Coding" });
+
+    // config.toml 条目被删后，仍能从 alias 前缀拆出供应商与模型。
+    expect(
+      resolveKcodeModelAndProvider({
+        modelAlias: "openrouter/anthropic/claude-sonnet-4",
+      }),
+    ).toEqual({ model: "anthropic/claude-sonnet-4", provider: "openrouter" });
+  });
+});
+
+describe("Kimi Code 1.3.5 wire（无 llm.request / agent.message.appended）与边界场景", () => {
+  it("1.3.5 主 agent 读取 step.end + profile.bind / usage.record，区分官方与第三方供应商", () => {
+    const config = parseKcodeConfigFile(
+      [
+        '[models."kimi-code/k3.1-pro"]',
+        'provider = "managed:kimi-code"',
+        'model = "k3.1-pro"',
+        '[models."Kimi For Coding/k3.1-pro"]',
+        'provider = "Kimi For Coding"',
+        'model = "k3.1-pro"',
+      ].join("\n"),
+    );
+    const content = wireLines([
+      {
+        type: "profile.bind",
+        agentId: "main",
+        profileName: "default",
+        modelAlias: "kimi-code/k3.1-pro",
+        time: 1_794_500_000_000,
+      },
+      loopEvent(1_794_500_000_100, { type: "step.begin", uuid: "u1", turnId: "0", step: 1 }),
+      {
+        type: "usage.record",
+        agentId: "main",
+        model: "kimi-code/k3.1-pro",
+        usage: REAL_STEP_USAGE,
+        usageScope: "turn",
+        time: 1_794_500_002_000,
+      },
+      loopEvent(1_794_500_002_100, {
+        type: "step.end",
+        uuid: "u1",
+        turnId: "0",
+        step: 1,
+        usage: REAL_STEP_USAGE,
+        messageId: "chatcmpl-official-1",
+        llmFirstTokenLatencyMs: 400,
+        llmStreamDurationMs: 1_500,
+      }),
+      // thinkingEffort 变更时不带 modelAlias，不能清掉当前模型绑定。
+      { type: "config.update", agentId: "main", thinkingEffort: "high", time: 1_794_500_005_000 },
+      // 中途切换为第三方供应商。
+      {
+        type: "config.update",
+        agentId: "main",
+        modelAlias: "Kimi For Coding/k3.1-pro",
+        time: 1_794_500_006_000,
+      },
+      loopEvent(1_794_500_007_000, { type: "step.begin", uuid: "u2", turnId: "1", step: 1 }),
+      {
+        type: "usage.record",
+        agentId: "main",
+        model: "Kimi For Coding/k3.1-pro",
+        usage: { inputOther: 500, output: 120, inputCacheRead: 2_000, inputCacheCreation: 0 },
+        usageScope: "turn",
+        time: 1_794_500_008_400,
+      },
+      loopEvent(1_794_500_008_500, {
+        type: "step.end",
+        uuid: "u2",
+        turnId: "1",
+        step: 1,
+        usage: { inputOther: 500, output: 120, inputCacheRead: 2_000, inputCacheCreation: 0 },
+        messageId: "msg-custom-1",
+        llmFirstTokenLatencyMs: 300,
+        llmStreamDurationMs: 1_100,
+      }),
+    ]);
+
+    const records = parseKcodeWireFile(content, { ...MAIN_CONTEXT, models: config });
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      id: "kcode:main:chatcmpl-official-1",
+      model: "k3.1-pro",
+      provider: "Moonshot AI",
+      timestamp: 1_794_500_000_100 + 1_900,
+      estimatedDurationMs: 1_900,
+      firstTokenMs: 400,
+    });
+    expect(records[1]).toMatchObject({
+      id: "kcode:main:msg-custom-1",
+      model: "k3.1-pro",
+      provider: "Kimi For Coding",
+      timestamp: 1_794_500_007_000 + 1_400,
+      estimatedDurationMs: 1_400,
+      firstTokenMs: 300,
+      totalTokens: 2_620,
+    });
+  });
+
+  it("第三方代理省略 messageId 时主 agent step.end 回退 event.uuid 并保留耗时", () => {
+    const config = parseKcodeConfigFile(
+      '[models."MyRelay/gpt-4.1"]\nprovider = "MyRelay"\nmodel = "gpt-4.1"\n',
+    );
+    const content = wireLines([
+      {
+        type: "profile.bind",
+        agentId: "main",
+        modelAlias: "MyRelay/gpt-4.1",
+        time: 1_794_500_010_000,
+      },
+      loopEvent(1_794_500_010_100, { type: "step.begin", uuid: "step-uuid-only", turnId: "0", step: 1 }),
+      loopEvent(1_794_500_012_000, {
+        type: "content.part",
+        stepUuid: "step-uuid-only",
+        part: { type: "text", text: "ok" },
+      }),
+      loopEvent(1_794_500_012_050, {
+        type: "step.end",
+        uuid: "step-uuid-only",
+        turnId: "0",
+        step: 1,
+        usage: REAL_STEP_USAGE,
+      }),
+    ]);
+
+    const records = parseKcodeWireFile(content, { ...MAIN_CONTEXT, models: config });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      id: "kcode:main:step-uuid-only",
+      requestId: "step-uuid-only",
+      model: "gpt-4.1",
+      provider: "MyRelay",
+      timestamp: 1_794_500_012_000,
+      estimatedDurationMs: 1_900,
+    });
+  });
+
+  it("混合会话（旧版 agent.message.appended + 1.3.5 step.end）去重不双计，session 级压缩独立计数", () => {
+    const content = wireLines([
+      // 旧版：同一 messageId 同时出现在 step.end 与 agent.message.appended。
+      loopEvent(1_794_500_020_000, { type: "step.begin", uuid: "old-1", turnId: "0", step: 1 }),
+      {
+        type: "llm.request",
+        agentId: "main",
+        kind: "loop",
+        model: "k3.1-pro-highspeed",
+        turnStep: "0.1",
+        time: 1_794_500_020_010,
+      },
+      loopEvent(1_794_500_021_010, {
+        type: "step.end",
+        uuid: "old-1",
+        messageId: "legacy-msg-1",
+        usage: REAL_STEP_USAGE,
+        llmFirstTokenLatencyMs: 200,
+        llmStreamDurationMs: 800,
+      }),
+      messageAppended({ messageId: "legacy-msg-1", time: 1_794_500_022_000 }),
+      // 升级 1.3.5 后新回合：只有 usage.record(turn) + step.end。
+      { type: "profile.bind", agentId: "main", modelAlias: "Kimi For Coding/k3.1-pro", time: 1_794_500_030_000 },
+      loopEvent(1_794_500_030_100, { type: "step.begin", uuid: "new-1", turnId: "1", step: 1 }),
+      {
+        type: "usage.record",
+        agentId: "main",
+        model: "Kimi For Coding/k3.1-pro",
+        usage: REAL_STEP_USAGE,
+        usageScope: "turn",
+        time: 1_794_500_031_000,
+      },
+      loopEvent(1_794_500_031_100, {
+        type: "step.end",
+        uuid: "new-1",
+        messageId: "new-msg-1",
+        usage: REAL_STEP_USAGE,
+      }),
+      // full_compaction 等 session 级操作独立产出。
+      {
+        type: "usage.record",
+        agentId: "main",
+        model: "Kimi For Coding/k3.1-pro",
+        usage: { inputOther: 300, output: 80, inputCacheRead: 0, inputCacheCreation: 0 },
+        usageScope: "session",
+        time: 1_794_500_040_000,
+      },
+    ]);
+
+    const records = parseKcodeWireFile(content, MAIN_CONTEXT);
+    expect(records).toHaveLength(3);
+    expect(records[0]).toMatchObject({
+      id: "kcode:agent-loop:legacy-msg-1",
+      model: "k3.1-pro-highspeed",
+      provider: "Moonshot AI",
+    });
+    expect(records[1]).toMatchObject({
+      id: "kcode:main:new-msg-1",
+      model: "k3.1-pro",
+      provider: "Kimi For Coding",
+    });
+    expect(records[2]).toMatchObject({
+      model: "k3.1-pro",
+      provider: "Kimi For Coding",
+      totalTokens: 380,
+      timestamp: 1_794_500_040_000,
+    });
   });
 });

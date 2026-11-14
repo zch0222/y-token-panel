@@ -1,6 +1,7 @@
 import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
 import type { UsageResponse } from "@/lib/usage";
@@ -12,6 +13,7 @@ import { readPiDesktopUsageIncremental } from "@/lib/wholefile-incremental";
 import { readWorkBuddyUsage } from "@/lib/workbuddy";
 import { readWorkBuddyUsageIncremental } from "@/lib/wholefile-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
+import { KCODE_PARSER_MARKER } from "@/lib/kcode-session";
 import { readKcodeUsageIncremental } from "@/lib/wholefile-incremental";
 import type { SessionRecord } from "@/lib/codebuddy-session";
 import type { WorkBuddySessionRecord } from "@/lib/workbuddy-session";
@@ -386,7 +388,7 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
         model: "kimi-k3-highspeed",
         estimatedDurationMs: 1800,
       });
-      expect(store.getSessionLogStates("kcode")).toHaveLength(2); // wire + projects.json
+      expect(store.getSessionLogStates("kcode")).toHaveLength(3); // wire + projects.json + parser-version
 
       const unchanged = await sync(readKcodeUsageIncremental);
       expect(unchanged.stats).toMatchObject({ bodyBytesRead: 0, unchangedFiles: 1 });
@@ -435,6 +437,111 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
       const disappeared = await sync(readKcodeUsageIncremental);
       expect(disappeared.stats.rebuilds).toBe(1);
       expect(disappeared.usage.records[0]?.project).toBe("demo");
+    });
+
+    it("1.3.5 主 agent 消费与 config.toml 变更触发重建重解析第三方供应商", async () => {
+      const mainDir = path.join(root, "kimi-code", "sessions", "wd_demo_180b664743fa", "session-v135", "agents", "main");
+      await mkdir(mainDir, { recursive: true });
+      await writeFile(
+        path.join(root, "kimi-code", "config.toml"),
+        [
+          '[models."Kimi For Coding/k3.1-pro"]',
+          'provider = "Kimi For Coding"',
+          'model = "k3.1-pro"',
+        ].join("\n"),
+      );
+      await writeFile(
+        path.join(mainDir, "wire.jsonl"),
+        [
+          JSON.stringify({ type: "profile.bind", agentId: "main", modelAlias: "Kimi For Coding/k3.1-pro", time: BASE_MS }),
+          JSON.stringify({ type: "context.append_loop_event", agentId: "main", time: BASE_MS + 100, event: { type: "step.begin", uuid: "s1", turnId: "0", step: 1 } }),
+          JSON.stringify({
+            type: "usage.record",
+            agentId: "main",
+            model: "Kimi For Coding/k3.1-pro",
+            usage: { inputOther: 500, output: 120, inputCacheRead: 2_000, inputCacheCreation: 0 },
+            usageScope: "turn",
+            time: BASE_MS + 1_100,
+          }),
+          JSON.stringify({
+            type: "context.append_loop_event",
+            agentId: "main",
+            time: BASE_MS + 1_200,
+            event: {
+              type: "step.end",
+              uuid: "s1",
+              turnId: "0",
+              step: 1,
+              messageId: "msg-v135-1",
+              llmFirstTokenLatencyMs: 250,
+              llmStreamDurationMs: 750,
+              usage: { inputOther: 500, output: 120, inputCacheRead: 2_000, inputCacheCreation: 0 },
+            },
+          }),
+        ].join("\n") + "\n",
+      );
+
+      const baseline = await readKcodeUsage();
+      const imported = await sync(readKcodeUsageIncremental);
+      expect(imported.usage).toEqual(baseline);
+      expect(imported.usage.records[0]).toMatchObject({
+        model: "k3.1-pro",
+        provider: "Kimi For Coding",
+        totalTokens: 2_620,
+      });
+
+      // 更改 config.toml 映射的模型与供应商名称：未变化 wire 也必须重建。
+      await writeFile(
+        path.join(root, "kimi-code", "config.toml"),
+        [
+          '[models."Kimi For Coding/k3.1-pro"]',
+          'provider = "Relay Gateway"',
+          'model = "kimi-k3-custom"',
+        ].join("\n"),
+      );
+      const updated = await sync(readKcodeUsageIncremental);
+      expect(updated.stats.rebuilds).toBe(1);
+      expect(updated.usage.records[0]).toMatchObject({
+        model: "kimi-k3-custom",
+        provider: "Relay Gateway",
+      });
+
+      // 删除 config.toml：触发重建并回退从 modelAlias 拆解。
+      await rm(path.join(root, "kimi-code", "config.toml"));
+      const removed = await sync(readKcodeUsageIncremental);
+      expect(removed.stats.rebuilds).toBe(1);
+      expect(removed.usage.records[0]).toMatchObject({
+        model: "k3.1-pro",
+        provider: "Kimi For Coding",
+      });
+    });
+
+    it("缺少或过期 kcode:parser-version 游标时自动触发一次性源级重建", async () => {
+      const directory = await agentDir();
+      await writeFile(path.join(directory, "wire.jsonl"), kcodeSubStep("chatcmpl-1", BASE_MS).join("\n") + "\n");
+
+      const first = await sync(readKcodeUsageIncremental);
+      expect(first.stats.rebuilds).toBe(1);
+      expect(store.getSessionLogStates("kcode").some((state) => state.filePath === KCODE_PARSER_MARKER)).toBe(true);
+
+      // 模拟升级前遗留库（无 kcode:parser-version 标记，且旧同步结果为空）。
+      store.close();
+      const db = new DatabaseSync(databasePath);
+      db.prepare("DELETE FROM session_log_sync WHERE harness = 'kcode' AND file_path = ?").run(
+        KCODE_PARSER_MARKER,
+      );
+      db.close();
+      store = new UsageStore(databasePath);
+
+      const upgraded = await sync(readKcodeUsageIncremental);
+      expect(upgraded.stats.rebuilds).toBe(1);
+      expect(upgraded.usage.records).toHaveLength(1);
+      expect(store.getSessionLogStates("kcode").some((state) => state.filePath === KCODE_PARSER_MARKER)).toBe(true);
+
+      // 后续无变化不再触发重建。
+      const steady = await sync(readKcodeUsageIncremental);
+      expect(steady.stats.rebuilds).toBe(0);
+      expect(steady.stats.unchangedFiles).toBe(1);
     });
   });
 

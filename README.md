@@ -68,7 +68,7 @@ KCode（Kimi Code）数据源是其本地会话 wire 日志：
 ~/.kimi-code/sessions/<workspace>/<session>/agents/<agent>/wire.jsonl
 ~~~
 
-可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致，空白值忽略并支持 `~`、`~/`、`~\` 展开）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。主 agent 读已提交的 assistant 消息用量，子 agent 读 `step.end` 用量；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
+可以通过 **KIMI_CODE_HOME**（与 Kimi Code 自身的环境变量一致，空白值忽略并支持 `~`、`~/`、`~\` 展开）指定另一个 `.kimi-code` 根目录（其下需有 `sessions`）。旧版主 agent 读已提交的 assistant 消息用量，1.3.5 起主/子 agent 统一消费带用量的 `step.end`（按 `messageId` 去重、并在代理省略响应 `messageId` 时回退 `uuid` / 文件行号）及 `usageScope="session"` 压缩操作，并结合 `config.toml` 的 `[models.*]` 解析自定义模型名与第三方供应商（官方渠道归为 `"Moonshot AI"`）；输入 Tokens 已扣除缓存（新鲜输入口径），请求耗时取 wire 内的原生计时（含首字等待，不含工具执行）。wire 里没有 Credits 字段，KCode 记录不参与 Credits 统计。
 
 Claude Code 数据源是其本地会话转录：
 
