@@ -170,6 +170,11 @@ const HARNESS_SOURCE_HINTS: Record<
     source: "~/.pi-desktop/sessions",
     envHint: "PI_DESKTOP_DATA_DIR 指定其他数据根目录（其下需有 sessions，亦跟随应用内存储位置设置）",
   },
+  devin: {
+    source: "%APPDATA%/devin/cli/sessions.db",
+    envHint:
+      "DEVIN_DATA_DIR 指定其他配置根目录（其下需有 cli/sessions.db）；亦跟随官方 DEVIN_SESSIONS_DIR / DEVIN_CONFIG_HOME",
+  },
 };
 
 function getChartNotice(

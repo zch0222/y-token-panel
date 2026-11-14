@@ -13,9 +13,11 @@ import {
   readPiDesktopUsageIncremental,
   readWorkBuddyUsageIncremental,
 } from "@/lib/wholefile-incremental";
+import { readDevinUsage } from "@/lib/devin";
 import { readZcodeUsage } from "@/lib/zcode";
 import { scanUsageForStorage, type UsageReader } from "@/lib/usage-scanner";
 
+vi.mock("@/lib/devin", () => ({ readDevinUsage: vi.fn() }));
 vi.mock("@/lib/antigravity", () => ({ readAntigravityUsage: vi.fn() }));
 vi.mock("@/lib/antigravity-incremental", () => ({ readAntigravityUsageIncremental: vi.fn() }));
 vi.mock("@/lib/claude", () => ({ readClaudeUsage: vi.fn() }));
@@ -52,6 +54,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     pidesktop: vi.fn(),
   };
   const zcodeReader = vi.fn<UsageReader>();
+  const devinReader = vi.fn<UsageReader>();
 
   function record(id: string, harness: HarnessId, timestamp: number): UsageRecord {
     return {
@@ -123,6 +126,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     vi.mocked(readKcodeUsageIncremental).mockImplementation(incrementals.kcode);
     vi.mocked(readWorkBuddyUsageIncremental).mockImplementation(incrementals.workbuddy);
     vi.mocked(readZcodeUsage).mockImplementation(zcodeReader);
+    vi.mocked(readDevinUsage).mockImplementation(devinReader);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -131,6 +135,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     vi.restoreAllMocks();
     for (const mock of Object.values(incrementals)) mock.mockReset();
     zcodeReader.mockReset();
+    devinReader.mockReset();
   });
 
   function stubAllSources(): void {
@@ -146,6 +151,16 @@ describe("scanUsageForStorage 来源错误隔离", () => {
         scannedFiles: 1,
         skippedFiles: 0,
         source: "/tmp/zcode",
+        sourceAvailable: true,
+      }),
+    );
+    devinReader.mockImplementation(async () =>
+      Promise.resolve({
+        harness: "devin",
+        records: [record("devin-1", "devin", 1000)],
+        scannedFiles: 1,
+        skippedFiles: 0,
+        source: "/tmp/devin",
         sourceAvailable: true,
       }),
     );
@@ -194,7 +209,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     const result = await scanUsageForStorage(store);
     const harnesses = result.usage.sources.map((source) => source.harness);
     expect(harnesses).not.toContain("dsh");
-    expect(harnesses).toHaveLength(9);
+    expect(harnesses).toHaveLength(10);
     await commitRound(result);
     expect(store.readNormalizedRecords("dsh")).toHaveLength(0);
   });
@@ -204,6 +219,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
       incrementals[harness].mockRejectedValue(new Error(`${harness} down`));
     }
     zcodeReader.mockRejectedValue(new Error("zcode down"));
+    devinReader.mockRejectedValue(new Error("devin down"));
     await expect(scanUsageForStorage(store)).rejects.toThrow("down");
   });
 });

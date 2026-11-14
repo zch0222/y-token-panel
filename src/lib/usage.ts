@@ -12,6 +12,7 @@ export const HARNESS_OPTIONS = [
   { id: "dsh", label: "DeepSeek Harness", description: "DeepSeek Harness CLI / Desktop 本地会话" },
   { id: "antigravity", label: "Antigravity", description: "Google Antigravity IDE / CLI 本地会话" },
   { id: "pidesktop", label: "Pi Desktop", description: "PI-Desktop 桌面端本地会话" },
+  { id: "devin", label: "Devin", description: "Devin Desktop / CLI 本地会话" },
 ] as const;
 
 export type HarnessId = (typeof HARNESS_OPTIONS)[number]["id"];

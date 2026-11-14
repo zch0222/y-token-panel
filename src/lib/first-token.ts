@@ -14,6 +14,8 @@ import type { HarnessId, UsageRecord } from "@/lib/usage";
  * - Antigravity：原生会话库 gen_metadata 字段 11（首字等待 Duration）——精确值。
  * - DSH：assistant/message 的 stream 里最早的 time/time0（块到达时刻）减
  *   step/start（请求起点）——两个时间戳都是真实事件时刻，按精确值处理。
+ * - Devin：chat_message metadata.metrics 的 ttft_ms（CLI 原生计时；实测
+ *   ttft + 输出×tpot ≈ total_time 闭环）——精确值。
  * - Claude Code：thinkingDurationMs（claude.exe Nlt：content_block_stop 的
  *   monotonicNow − content_block_start，只有回复以思考块开头时才有）推出
  *   首字时刻，再减沿父链回溯出的请求起点——起点是上一条日志写盘时刻，
@@ -34,6 +36,7 @@ export const PRECISE_FIRST_TOKEN_HARNESSES: ReadonlySet<HarnessId> = new Set([
   "kcode",
   "antigravity",
   "dsh",
+  "devin",
 ]);
 
 /**

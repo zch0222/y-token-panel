@@ -5,6 +5,7 @@ import { readClaudeUsageIncremental } from "@/lib/claude-incremental";
 import { readCodeBuddyUsage } from "@/lib/codebuddy";
 import { readCodexUsage } from "@/lib/codex";
 import { readCodexUsageIncremental } from "@/lib/codex-incremental";
+import { readDevinUsage } from "@/lib/devin";
 import { readDshUsage } from "@/lib/dsh";
 import { readDshUsageIncremental } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
@@ -54,6 +55,7 @@ const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
   { harness: "dsh", read: readDshUsage },
   { harness: "antigravity", read: readAntigravityUsage },
   { harness: "pidesktop", read: readPiDesktopUsage },
+  { harness: "devin", read: readDevinUsage },
 ];
 
 /** worker 专用：全量 reader 之外的持久游标增量路径（与全量 reader 同一解析体）。 */

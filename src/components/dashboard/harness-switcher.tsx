@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Briefcase, Layers, Moon, Orbit, Pi, Sparkles, SquareTerminal, Telescope, Waves, Zap, type LucideIcon } from "lucide-react";
+import { Bird, Bot, Briefcase, Layers, Moon, Orbit, Pi, Sparkles, SquareTerminal, Telescope, Waves, Zap, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   HARNESS_OPTIONS,
@@ -28,6 +28,7 @@ const icons: Record<"all" | HarnessId, LucideIcon> = {
   dsh: Waves,
   antigravity: Orbit,
   pidesktop: Pi,
+  devin: Bird,
 };
 
 const iconStyles: Record<"all" | HarnessId, string> = {
@@ -42,6 +43,7 @@ const iconStyles: Record<"all" | HarnessId, string> = {
   dsh: "bg-blue-500/12 text-blue-400",
   antigravity: "bg-fuchsia-500/12 text-fuchsia-400",
   pidesktop: "bg-cyan-500/12 text-cyan-400",
+  devin: "bg-indigo-500/12 text-indigo-400",
 };
 
 export function HarnessSwitcher({
