@@ -19,6 +19,7 @@ import {
   formatCredits,
   formatPercent,
   type MetricKey,
+  type TrendGranularity,
   type TrendPoint,
 } from "@/lib/usage";
 
@@ -27,10 +28,16 @@ export type ChartType = "bar" | "area";
 interface UsageChartProps {
   data: TrendPoint[];
   metric: MetricKey;
-  hourly: boolean;
+  granularity: TrendGranularity;
   chartType: ChartType;
   onChartTypeChange: (type: ChartType) => void;
 }
+
+const granularityLabels: Record<TrendGranularity, string> = {
+  minute: "按分钟",
+  hour: "按小时",
+  day: "按日期",
+};
 
 const metricLabels: Record<MetricKey, string> = {
   credits: "Credits",
@@ -80,7 +87,7 @@ function ChartTooltip({
 export function UsageChart({
   data,
   metric,
-  hourly,
+  granularity,
   chartType,
   onChartTypeChange,
 }: UsageChartProps) {
@@ -124,7 +131,7 @@ export function UsageChart({
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground/80">{metricLabels[metric]}</span>
           <span>·</span>
-          <span>{hourly ? "按小时" : "按日期"}</span>
+          <span>{granularityLabels[granularity]}</span>
           {showUnbilled && (
             <span className="ml-2 flex items-center gap-3">
               <span className="flex items-center gap-1.5">

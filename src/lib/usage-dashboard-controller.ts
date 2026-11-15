@@ -61,6 +61,8 @@ const browserDashboardEnvironment: UsageDashboardEnvironment = {
 function sameFilters(a: UsageQueryFilters, b: UsageQueryFilters): boolean {
   return (
     a.range === b.range &&
+    a.start === b.start &&
+    a.end === b.end &&
     a.harness === b.harness &&
     a.project === b.project &&
     a.provider === b.provider &&
@@ -304,7 +306,7 @@ export class UsageDashboardController {
   /** 滚动范围（今天/昨天/近 N 天）按分钟失效：跨午夜后无需新数据也能纠正边界。 */
   private onMinuteTick = (): void => {
     if (!this.active || this.environment.isDocumentHidden()) return;
-    if (this.filters.range === "all") return;
+    if (this.filters.range === "all" || this.filters.range === "custom") return;
     if (this.environment.now() - this.lastViewFetchAt < this.minuteInvalidationMs) return;
     this.refetchQueries();
   };
@@ -315,6 +317,7 @@ export class UsageDashboardController {
     // 同步循环回前台会补一轮同步；这里只补滚动范围的分钟失效。
     if (
       this.filters.range !== "all" &&
+      this.filters.range !== "custom" &&
       this.environment.now() - this.lastViewFetchAt >= this.minuteInvalidationMs
     ) {
       this.refetchQueries();
