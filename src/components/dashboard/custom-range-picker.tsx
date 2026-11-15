@@ -79,6 +79,14 @@ const precisionOptions: Array<{ value: Precision; label: string }> = [
 ];
 
 /**
+ * 触发器按内容自适应宽度（w-fit）并给最小宽度撑开排版：写死 px 会把「精度 小时」
+ * 「00 时」这类短文本压进 SelectValue 的 line-clamp-1 里截断（字号、缩放、字体回退
+ * 都会改变文本宽度）。
+ */
+const precisionTriggerClass = "h-8 w-fit min-w-[104px] border-border bg-card text-xs";
+const unitTriggerClass = "h-8 w-fit min-w-[78px] border-border bg-card text-xs";
+
+/**
  * 自定义时间段选择器：默认小时精度（分钟下拉隐藏），切到分钟后可选分钟；
  * 草稿本地维护，点「应用」才提交，避免逐次下拉触发查询。
  */
@@ -108,7 +116,7 @@ export function CustomRangePicker({ value, onApply }: CustomRangePickerProps) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border/70 bg-card/60 px-2 py-1.5">
       <Select value={precision} onValueChange={(next) => changePrecision((next as Precision | null) ?? "hour")}>
-        <SelectTrigger size="sm" className="h-8 w-[92px] border-border bg-card text-xs" aria-label="时间精度">
+        <SelectTrigger size="sm" className={precisionTriggerClass} aria-label="时间精度">
           <span className="mr-auto text-muted-foreground">精度</span>
           <SelectValue>{precisionOptions.find((option) => option.value === precision)?.label}</SelectValue>
         </SelectTrigger>
@@ -131,7 +139,7 @@ export function CustomRangePicker({ value, onApply }: CustomRangePickerProps) {
         value={draft.startHour}
         onValueChange={(hour) => setDraft((previous) => ({ ...previous, startHour: (hour as number | null) ?? 0 }))}
       >
-        <SelectTrigger size="sm" className="h-8 w-[62px] border-border bg-card text-xs" aria-label="开始小时">
+        <SelectTrigger size="sm" className={unitTriggerClass} aria-label="开始小时">
           <SelectValue>{pad(draft.startHour)} 时</SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -145,7 +153,7 @@ export function CustomRangePicker({ value, onApply }: CustomRangePickerProps) {
           value={draft.startMinute}
           onValueChange={(minute) => setDraft((previous) => ({ ...previous, startMinute: (minute as number | null) ?? 0 }))}
         >
-          <SelectTrigger size="sm" className="h-8 w-[62px] border-border bg-card text-xs" aria-label="开始分钟">
+          <SelectTrigger size="sm" className={unitTriggerClass} aria-label="开始分钟">
             <SelectValue>{pad(draft.startMinute)} 分</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -170,7 +178,7 @@ export function CustomRangePicker({ value, onApply }: CustomRangePickerProps) {
         value={draft.endHour}
         onValueChange={(hour) => setDraft((previous) => ({ ...previous, endHour: (hour as number | null) ?? 0 }))}
       >
-        <SelectTrigger size="sm" className="h-8 w-[62px] border-border bg-card text-xs" aria-label="结束小时">
+        <SelectTrigger size="sm" className={unitTriggerClass} aria-label="结束小时">
           <SelectValue>{pad(draft.endHour)} 时</SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -184,7 +192,7 @@ export function CustomRangePicker({ value, onApply }: CustomRangePickerProps) {
           value={draft.endMinute}
           onValueChange={(minute) => setDraft((previous) => ({ ...previous, endMinute: (minute as number | null) ?? 0 }))}
         >
-          <SelectTrigger size="sm" className="h-8 w-[62px] border-border bg-card text-xs" aria-label="结束分钟">
+          <SelectTrigger size="sm" className={unitTriggerClass} aria-label="结束分钟">
             <SelectValue>{pad(draft.endMinute)} 分</SelectValue>
           </SelectTrigger>
           <SelectContent>
