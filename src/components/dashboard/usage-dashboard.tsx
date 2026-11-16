@@ -32,6 +32,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { BalanceView } from "@/components/dashboard/balance-view";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
+import { CustomRangePicker } from "@/components/dashboard/custom-range-picker";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { MobileNavigation, Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { InstallAppButton } from "@/components/pwa/install-app-button";
@@ -41,11 +42,14 @@ import { cn } from "@/lib/utils";
 import { UsageDashboardController } from "@/lib/usage-dashboard-controller";
 import {
   BILLING_OPTIONS,
+  defaultCustomRange,
   formatCompact,
   formatCredits,
+  formatCustomRangeLabel,
   formatPercent,
   formatTime,
   getHarnessLabel,
+  getTrendGranularity,
   HARNESS_OPTIONS,
   RANGE_OPTIONS,
   summarizeRecords,
@@ -170,6 +174,11 @@ const HARNESS_SOURCE_HINTS: Record<
     source: "~/.pi-desktop/sessions",
     envHint: "PI_DESKTOP_DATA_DIR 指定其他数据根目录（其下需有 sessions，亦跟随应用内存储位置设置）",
   },
+  devin: {
+    source: "%APPDATA%/devin/cli/sessions.db",
+    envHint:
+      "DEVIN_DATA_DIR 指定其他配置根目录（其下需有 cli/sessions.db）；亦跟随官方 DEVIN_SESSIONS_DIR / DEVIN_CONFIG_HOME",
+  },
 };
 
 function getChartNotice(
@@ -210,6 +219,9 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
 function usageQuerySearch(filters: UsageQueryFilters, extra: Record<string, string> = {}): string {
   return new URLSearchParams({
     range: filters.range,
+    ...(filters.range === "custom" && filters.start !== undefined && filters.end !== undefined
+      ? { start: String(filters.start), end: String(filters.end) }
+      : {}),
     harness: filters.harness,
     project: filters.project,
     provider: filters.provider,
@@ -268,6 +280,7 @@ export function UsageDashboard() {
     dashboardState;
   const view = viewSection.data;
   const [range, setRange] = useState<RangeKey>("today");
+  const [customRange, setCustomRange] = useState<{ start: number; end: number } | null>(null);
   const [harness, setHarness] = useState<HarnessFilter>("all");
   const [project, setProject] = useState("all");
   const [provider, setProvider] = useState("all");
@@ -302,8 +315,18 @@ export function UsageDashboard() {
 
   // 筛选变化交给控制器统一查询；切换时保留上一份数据（updating 状态）。
   const filters = useMemo<UsageQueryFilters>(
-    () => ({ range, harness, project, provider, model, billing }),
-    [range, harness, project, provider, model, billing],
+    () => ({
+      range,
+      ...(range === "custom" && customRange
+        ? { start: customRange.start, end: customRange.end }
+        : {}),
+      harness,
+      project,
+      provider,
+      model,
+      billing,
+    }),
+    [range, customRange, harness, project, provider, model, billing],
   );
   useEffect(() => {
     controller.setFilters(filters);
@@ -348,6 +371,7 @@ export function UsageDashboard() {
     billing !== "all";
   const clearFilters = () => {
     setRange("today");
+    setCustomRange(null);
     setHarness("all");
     setProject("all");
     setProvider("all");
@@ -464,10 +488,28 @@ export function UsageDashboard() {
           />
 
           <div className="mb-5 flex flex-wrap items-center gap-2">
-            <Select value={range} onValueChange={(value) => setRange((value as RangeKey | null) ?? "today")}>
-              <SelectTrigger className="h-9 min-w-[118px] border-border bg-card text-xs" aria-label="时间范围">
-                <CalendarDays className="mr-1 size-3.5 text-muted-foreground" />
-                <SelectValue>{RANGE_OPTIONS.find((option) => option.value === range)?.label}</SelectValue>
+            <Select
+              value={range}
+              onValueChange={(value) => {
+                if (value === "custom") {
+                  // 首次进入自定义时给默认窗口（今天 00 时 ～ 23 时），之后沿用上次应用值。
+                  setRange("custom");
+                  setCustomRange((previous) => previous ?? defaultCustomRange());
+                  return;
+                }
+                setRange((value as RangeKey | null) ?? "today");
+              }}
+            >
+              <SelectTrigger
+                className="h-9 min-w-[118px] max-w-[248px] border-border bg-card text-xs"
+                aria-label="时间范围"
+              >
+                <CalendarDays className="mr-1 size-3.5 shrink-0 text-muted-foreground" />
+                <SelectValue>
+                  {range === "custom" && customRange
+                    ? `自定义 · ${formatCustomRangeLabel(customRange.start, customRange.end)}`
+                    : RANGE_OPTIONS.find((option) => option.value === range)?.label}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {RANGE_OPTIONS.map((option) => (
@@ -477,6 +519,10 @@ export function UsageDashboard() {
                 ))}
               </SelectContent>
             </Select>
+
+            {range === "custom" && (
+              <CustomRangePicker value={customRange} onApply={setCustomRange} />
+            )}
 
             <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
 
@@ -684,7 +730,7 @@ export function UsageDashboard() {
                   <UsageChart
                     data={trend}
                     metric={metric}
-                    hourly={range === "today" || range === "yesterday"}
+                    granularity={getTrendGranularity(range, customRange?.start, customRange?.end)}
                     chartType={chartType}
                     onChartTypeChange={setChartType}
                   />

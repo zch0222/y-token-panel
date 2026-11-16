@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -29,9 +30,14 @@ import {
 import { parsePiDesktopSession } from "@/lib/pi-desktop-session";
 import { kcodeRoot } from "@/lib/kcode";
 import {
+  KCODE_PARSER_MARKER,
+  KCODE_PARSER_VERSION,
+  parseKcodeConfigFile,
   parseKcodeProjectsFile,
   parseKcodeWireFile,
   resolveKcodeProjectName,
+  type KcodeConfiguredModel,
+  type KcodeWireContext,
 } from "@/lib/kcode-session";
 import { workBuddySource } from "@/lib/workbuddy";
 import { parseWorkBuddySession } from "@/lib/workbuddy-session";
@@ -486,12 +492,37 @@ export function readWorkBuddyUsageIncremental(store: UsageStore): Promise<Increm
 // ---------------------------------------------------------------------------
 
 interface KcodeFile extends IncrementalFileBase {
-  context: {
-    project: string;
-    sessionId: string;
-    agent: string;
-    file: string;
-  };
+  context: KcodeWireContext;
+}
+
+async function readKcodeAuxiliary<V>(
+  filePath: string,
+  empty: Map<string, V>,
+  parse: (content: string) => Map<string, V>,
+): Promise<{ auxiliary: WholeFileAuxiliary; value: Map<string, V> }> {
+  try {
+    const [metadata, content] = await Promise.all([stat(filePath), readFile(filePath)]);
+    let value = empty;
+    try {
+      value = parse(content.toString("utf8"));
+    } catch {
+      // 注册表/配置内容损坏时退回默认映射（与全量 reader 一致）。
+    }
+    return {
+      auxiliary: {
+        filePath,
+        size: metadata.size,
+        mtimeMs: metadata.mtimeMs,
+        fingerprint: createHash("sha256").update(content).digest("hex"),
+      },
+      value,
+    };
+  } catch {
+    return {
+      auxiliary: { filePath, size: null, mtimeMs: null, fingerprint: null },
+      value: empty,
+    };
+  }
 }
 
 async function discoverKcodeFiles(): Promise<WholeFileDiscovery<KcodeFile>> {
@@ -500,27 +531,24 @@ async function discoverKcodeFiles(): Promise<WholeFileDiscovery<KcodeFile>> {
   const files: KcodeFile[] = [];
   let scannedFiles = 0;
   let skippedFiles = 0;
-  const auxiliaries: WholeFileAuxiliary[] = [];
 
-  // projects.json 项目注册表：影响全部记录的 project 归组，纳入重建触发。
-  const projectsPath = path.join(root, "projects.json");
-  let projectNames = new Map<string, string>();
-  try {
-    const [metadata, content] = await Promise.all([stat(projectsPath), readFile(projectsPath)]);
-    auxiliaries.push({
-      filePath: projectsPath,
-      size: metadata.size,
-      mtimeMs: metadata.mtimeMs,
-      fingerprint: fingerprintAt(content, content.length),
-    });
-    try {
-      projectNames = parseKcodeProjectsFile(content.toString("utf8"));
-    } catch {
-      // 注册表内容损坏时退回目录名解析（与全量 reader 一致）。
-    }
-  } catch {
-    auxiliaries.push({ filePath: projectsPath, size: null, mtimeMs: null, fingerprint: null });
-  }
+  // projects.json（project 归组）与 config.toml（第三方供应商与真实模型名）均影响全部记录，与解析器版本一并纳入重建触发。
+  const [projectsAux, configAux] = await Promise.all([
+    readKcodeAuxiliary(path.join(root, "projects.json"), new Map<string, string>(), parseKcodeProjectsFile),
+    readKcodeAuxiliary(path.join(root, "config.toml"), new Map<string, KcodeConfiguredModel>(), parseKcodeConfigFile),
+  ]);
+  const auxiliaries: WholeFileAuxiliary[] = [
+    projectsAux.auxiliary,
+    configAux.auxiliary,
+    {
+      filePath: KCODE_PARSER_MARKER,
+      size: KCODE_PARSER_VERSION,
+      mtimeMs: 0,
+      fingerprint: `kcode-parser-v${KCODE_PARSER_VERSION}`,
+    },
+  ];
+  const projectNames = projectsAux.value;
+  const configuredModels = configAux.value;
 
   let workspaces;
   try {
@@ -568,6 +596,7 @@ async function discoverKcodeFiles(): Promise<WholeFileDiscovery<KcodeFile>> {
               sessionId: session.name,
               agent: agent.name,
               file: wirePath,
+              models: configuredModels,
             },
           });
         } catch {

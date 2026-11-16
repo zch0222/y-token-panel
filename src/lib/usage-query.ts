@@ -10,9 +10,10 @@ import {
 import {
   BILLING_OPTIONS,
   createTrendPoints,
-  getRangeBounds,
+  getTrendGranularity,
   HARNESS_OPTIONS,
   RANGE_OPTIONS,
+  resolveRangeBounds,
   summarizeRecords,
   type BillingFilter,
   type GroupDimension,
@@ -147,7 +148,7 @@ function filterSql(filters: UsageQueryFilters, now: Date, options: {
   const conditions: string[] = [];
   const params: Array<string | number> = [];
   if (!options.skipRange) {
-    const { start, end } = getRangeBounds(filters.range, now);
+    const { start, end } = resolveRangeBounds(filters, now);
     conditions.push("timestamp_ms >= ?", "timestamp_ms <= ?");
     params.push(start, Math.min(end, MAX_TIMESTAMP_MS));
   }
@@ -349,8 +350,9 @@ function queryTrend(
   filters: UsageQueryFilters,
   now: Date,
 ): TrendPoint[] {
-  const hourly = filters.range === "today" || filters.range === "yesterday";
-  const bucketFormat = hourly ? "%Y-%m-%d %H" : "%Y-%m-%d";
+  const granularity = getTrendGranularity(filters.range, filters.start, filters.end);
+  const bucketFormat =
+    granularity === "minute" ? "%Y-%m-%d %H:%M" : granularity === "hour" ? "%Y-%m-%d %H" : "%Y-%m-%d";
   const { where, params } = filterSql(filters, now);
   const rows = db
     .prepare(
@@ -367,7 +369,10 @@ function queryTrend(
       GROUP BY bucket`,
     )
     .all(...params) as unknown as TrendRow[];
-  const points = createTrendPoints(filters.range, now, rows.map((row) => row.bucket));
+  const points = createTrendPoints(filters.range, now, rows.map((row) => row.bucket), {
+    start: filters.start,
+    end: filters.end,
+  });
   for (const row of rows) {
     const point = points.get(row.bucket);
     if (!point) continue;
@@ -593,6 +598,19 @@ function parsePositiveInteger(
   return Number(raw);
 }
 
+/** custom 时间段的毫秒时间戳；缺省或非法都返回 null（非预设范围不静默回退）。 */
+function parseTimestampMs(
+  searchParams: URLSearchParams,
+  key: string,
+): number | null {
+  const raw = searchParams.get(key);
+  if (raw === null || raw === "") return null;
+  if (!/^\d{1,16}$/.test(raw)) return null;
+  const value = Number(raw);
+  if (value > MAX_TIMESTAMP_MS) return null;
+  return value;
+}
+
 /** 路由共享的查询参数解析；非法值返回 400 文案而不是静默回退。 */
 export function parseUsageQueryParams(searchParams: URLSearchParams): ParseUsageQueryResult {
   const filters: UsageQueryFilters = {
@@ -606,6 +624,14 @@ export function parseUsageQueryParams(searchParams: URLSearchParams): ParseUsage
   const range = parseEnum(searchParams, "range", RANGE_VALUES, filters.range);
   if (range === null) return { ok: false, error: "range 参数非法" };
   filters.range = range;
+  if (filters.range === "custom") {
+    const start = parseTimestampMs(searchParams, "start");
+    const end = parseTimestampMs(searchParams, "end");
+    if (start === null || end === null) return { ok: false, error: "start/end 参数非法" };
+    if (start >= end) return { ok: false, error: "自定义时间段 start 需早于 end" };
+    filters.start = start;
+    filters.end = end;
+  }
   const harness = parseEnum(
     searchParams,
     "harness",

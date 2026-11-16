@@ -100,6 +100,39 @@ describe("M6 查询 API", () => {
     expect(await response.json()).toEqual({ error: "range 参数非法" });
   });
 
+  it("custom 时间段按毫秒区间过滤并按分钟分桶；非法区间返回 400", async () => {
+    // m1 / m2 落在首轮用例的“现在”附近；用宽裕的窗口覆盖，8 天前的 m3 排除。
+    const now = Date.now();
+    const start = now - 3_600_000;
+    const end = now + 60_000;
+    const response = await queryUsageView(
+      new Request(`http://localhost/api/usage/query?range=custom&start=${start}&end=${end}`),
+    );
+    expect(response.status).toBe(200);
+    const view = (await response.json()) as {
+      summary: { requests: number };
+      filteredCount: number;
+      trend: Array<{ key: string }>;
+    };
+    expect(view.summary.requests).toBe(2);
+    expect(view.filteredCount).toBe(2);
+    // 跨度约 61 分钟 → 分钟桶，从起点整分钟铺到终点。
+    expect(view.trend.length).toBe(62);
+    expect(view.trend[0].key).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+
+    const missingEnd = await queryUsageView(
+      new Request("http://localhost/api/usage/query?range=custom&start=1000"),
+    );
+    expect(missingEnd.status).toBe(400);
+    expect(await missingEnd.json()).toEqual({ error: "start/end 参数非法" });
+
+    const inverted = await queryUsageView(
+      new Request("http://localhost/api/usage/query?range=custom&start=2000&end=1000"),
+    );
+    expect(inverted.status).toBe(400);
+    expect(await inverted.json()).toEqual({ error: "自定义时间段 start 需早于 end" });
+  });
+
   it("日志分页受控且页大小钳制，非法页码返回 400", async () => {
     const ok = await queryUsageRecords(
       new Request("http://localhost/api/usage/records?page=1&pageSize=1"),

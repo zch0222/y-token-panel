@@ -166,6 +166,10 @@ const SEVEN_DAYS: UsageQueryFilters = {
   range: "7d",
 };
 
+function customFilters(start: number, end: number): UsageQueryFilters {
+  return { ...DEFAULT_USAGE_FILTERS, range: "custom", start, end };
+}
+
 describe("UsageDashboardController", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => {
@@ -446,6 +450,52 @@ describe("UsageDashboardController", () => {
     pending.resolve(syncPayload(1));
     await manual;
     expect(controller.getState().syncing).toBe(false);
+    controller.stop();
+  });
+
+  it("custom 边界参与筛选比较；范围固定不参与分钟失效，revision 变化仍重查", async () => {
+    const env = createEnvironment();
+    let revision = 1;
+    const fetchView = vi.fn(async () => viewPayload(revision));
+    const fetchRecords = vi.fn(async () => recordsPayload(0));
+    const syncUsage = vi.fn(async () => syncPayload(revision));
+    const controller = new UsageDashboardController({
+      fetchView,
+      fetchRecords,
+      syncUsage,
+      environment: env.environment,
+      minuteInvalidationMs: 60_000,
+    });
+    controller.start();
+    await flushPromises();
+
+    controller.setFilters(customFilters(1_000, 2_000));
+    await flushPromises();
+    expect(fetchView).toHaveBeenLastCalledWith(customFilters(1_000, 2_000));
+
+    // 相同 custom 边界：sameFilters 判等，不重查。
+    const appliedCalls = fetchView.mock.calls.length;
+    controller.setFilters(customFilters(1_000, 2_000));
+    await flushPromises();
+    expect(fetchView.mock.calls.length).toBe(appliedCalls);
+
+    // 调整边界视为新筛选：重查。
+    controller.setFilters(customFilters(1_500, 2_000));
+    await flushPromises();
+    expect(fetchView.mock.calls.length).toBe(appliedCalls + 1);
+    expect(fetchView).toHaveBeenLastCalledWith(customFilters(1_500, 2_000));
+
+    // 分钟失效对 custom 跳过（边界固定）；revision 未变时也不重查。
+    env.advance(120_000);
+    await flushPromises();
+    expect(fetchView.mock.calls.length).toBe(appliedCalls + 1);
+
+    // 同步推进 revision：重查追平。
+    revision = 2;
+    env.advance(60_000 + 1);
+    await flushPromises();
+    expect(fetchView.mock.calls.length).toBe(appliedCalls + 2);
+    expect(controller.getState().view.data?.revision).toBe(2);
     controller.stop();
   });
 });

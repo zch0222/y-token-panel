@@ -170,6 +170,25 @@ const FILTER_CASES: UsageQueryFilters[] = [
   { range: "7d", harness: "qoder", project: "project-alpha", provider: "OpenAI", model: "gpt-5", billing: "billable" },
   { range: "all", harness: "all", project: "项目中文", provider: "all", model: "all", billing: "unbilled" },
   { range: "30d", harness: "dsh", project: "all", provider: "DeepSeek", model: "all", billing: "all" },
+  // custom 三档粒度：≤6h 分钟、≤7d 小时（跨午夜）、更长按日。
+  {
+    range: "custom",
+    start: new Date(2026, 10, 8, 9, 0).getTime(),
+    end: new Date(2026, 10, 8, 12, 30).getTime(),
+    harness: "all", project: "all", provider: "all", model: "all", billing: "all",
+  },
+  {
+    range: "custom",
+    start: new Date(2026, 10, 7, 20, 0).getTime(),
+    end: new Date(2026, 10, 8, 14, 0).getTime(),
+    harness: "claude", project: "all", provider: "all", model: "all", billing: "all",
+  },
+  {
+    range: "custom",
+    start: new Date(2026, 9, 10, 0, 0).getTime(),
+    end: new Date(2026, 10, 6, 23, 0).getTime(),
+    harness: "all", project: "all", provider: "all", model: "all", billing: "unbilled",
+  },
 ];
 
 describe("UsageStore 聚合查询与 JS 口径一致性", () => {
@@ -183,6 +202,7 @@ describe("UsageStore 聚合查询与 JS 口径一致性", () => {
       const view = store.queryView(filters, now);
 
       expect(view.snapshotAvailable).toBe(true);
+      const custom = { start: filters.start, end: filters.end };
       const expectedRecords = filterUsageRecords(
         records,
         filters.range,
@@ -192,6 +212,7 @@ describe("UsageStore 聚合查询与 JS 口径一致性", () => {
         now,
         filters.harness,
         filters.billing,
+        custom,
       );
       expect(view.filteredCount).toBe(expectedRecords.length);
       expectCloseSummary(view.summary, summarizeRecords(expectedRecords));
@@ -208,7 +229,7 @@ describe("UsageStore 聚合查询与 JS 口径一致性", () => {
       );
       expectCloseSummary(view.todaySummary, summarizeRecords(expectedToday));
 
-      const expectedTrend = buildTrend(expectedRecords, filters.range, now);
+      const expectedTrend = buildTrend(expectedRecords, filters.range, now, custom);
       expect(view.trend.length).toBe(expectedTrend.length);
       for (let index = 0; index < expectedTrend.length; index += 1) {
         expect(view.trend[index].key).toBe(expectedTrend[index].key);
@@ -289,6 +310,89 @@ describe("UsageStore 聚合查询与 JS 口径一致性", () => {
     expect(after.summary.requests).toBe(0);
     // “昨天”在跨午夜后正好覆盖 11-08。
     expect(store.queryView({ ...filters, range: "yesterday" }, afterMidnight).summary.requests).toBe(2);
+  });
+
+  it("custom 时间段跨午夜按分钟分桶，SQL 分桶与 JS 管线逐字段一致", () => {
+    const store = openStore();
+    const now = new Date(2026, 10, 8, 15, 30, 0);
+    const custom = {
+      start: new Date(2026, 10, 7, 22, 0).getTime(),
+      end: new Date(2026, 10, 8, 1, 0).getTime(),
+    };
+    const records = [
+      ...generateRecords(1, 11).map((record, index) => ({
+        ...record,
+        id: `minute-a-${index}`,
+        timestamp: new Date(2026, 10, 7, 23, 58, 20).getTime(),
+      })),
+      ...generateRecords(1, 12).map((record, index) => ({
+        ...record,
+        id: `minute-b-${index}`,
+        timestamp: new Date(2026, 10, 8, 0, 2, 40).getTime(),
+      })),
+      // 窗口外：22:00 前与 01:00 后各一条，不应计入。
+      ...generateRecords(1, 13).map((record, index) => ({
+        ...record,
+        id: `minute-out-early-${index}`,
+        timestamp: new Date(2026, 10, 7, 21, 59, 0).getTime(),
+      })),
+      ...generateRecords(1, 14).map((record, index) => ({
+        ...record,
+        id: `minute-out-late-${index}`,
+        timestamp: new Date(2026, 10, 8, 1, 0, 1).getTime(),
+      })),
+    ];
+    commitRecords(store, records);
+    const filters: UsageQueryFilters = {
+      range: "custom",
+      start: custom.start,
+      end: custom.end,
+      harness: "all",
+      project: "all",
+      provider: "all",
+      model: "all",
+      billing: "all",
+    };
+    const view = store.queryView(filters, now);
+
+    expect(view.filteredCount).toBe(2);
+    // 22:00 ～ 01:00 共 181 个分钟桶；边界记录落在 23:58 与 00:02 桶。
+    const byKey = new Map(view.trend.map((point) => [point.key, point.requests]));
+    expect(view.trend.length).toBe(181);
+    expect(view.trend[0]).toMatchObject({ key: "2026-11-07 22:00", label: "22:00" });
+    expect(view.trend[0].fullLabel).toBe("2026-11-07 22:00–22:01");
+    // 23:59 桶跨天：右侧带完整日期。
+    expect(byKey.has("2026-11-07 23:59")).toBe(true);
+    expect(view.trend.find((point) => point.key === "2026-11-07 23:59")?.fullLabel).toBe(
+      "2026-11-07 23:59–2026-11-08 00:00",
+    );
+    expect(byKey.get("2026-11-07 23:58")).toBe(1);
+    expect(byKey.get("2026-11-08 00:02")).toBe(1);
+    expect(Array.from(byKey.values()).reduce((sum, count) => sum + count, 0)).toBe(2);
+
+    // 与 JS 管线对拍。
+    const expectedRecords = filterUsageRecords(
+      records,
+      "custom",
+      "all",
+      "all",
+      "all",
+      now,
+      "all",
+      "all",
+      custom,
+    );
+    const expectedTrend = buildTrend(expectedRecords, "custom", now, custom);
+    expect(view.trend.length).toBe(expectedTrend.length);
+    for (let index = 0; index < expectedTrend.length; index += 1) {
+      expect(view.trend[index]).toMatchObject({
+        key: expectedTrend[index].key,
+        label: expectedTrend[index].label,
+        fullLabel: expectedTrend[index].fullLabel,
+        requests: expectedTrend[index].requests,
+        tokens: expectedTrend[index].tokens,
+      });
+    }
   });
 
   it("分页覆盖全部筛选记录且无重复，越界页码与页大小被钳制", () => {
@@ -436,5 +540,58 @@ describe("parseUsageQueryParams", () => {
     expect(
       parseUsageQueryParams(new URLSearchParams(`project=${"x".repeat(301)}`)),
     ).toMatchObject({ ok: false, error: "project 参数非法" });
+  });
+
+  it("custom 时间段解析：合法毫秒区间通过，非法参数返回 400 文案", () => {
+    const ok = parseUsageQueryParams(
+      new URLSearchParams("range=custom&start=1000&end=2000&harness=claude"),
+    );
+    expect(ok).toEqual({
+      ok: true,
+      value: {
+        filters: {
+          range: "custom",
+          start: 1000,
+          end: 2000,
+          harness: "claude",
+          project: "all",
+          provider: "all",
+          model: "all",
+          billing: "all",
+        },
+        page: 0,
+        pageSize: DEFAULT_RECORDS_PAGE_SIZE,
+      },
+    });
+
+    // 缺参 / 非数字 / 超长数字 / start ≥ end。
+    expect(parseUsageQueryParams(new URLSearchParams("range=custom"))).toMatchObject({
+      ok: false,
+      error: "start/end 参数非法",
+    });
+    expect(
+      parseUsageQueryParams(new URLSearchParams("range=custom&start=1000")),
+    ).toMatchObject({ ok: false, error: "start/end 参数非法" });
+    expect(
+      parseUsageQueryParams(new URLSearchParams("range=custom&start=abc&end=2000")),
+    ).toMatchObject({ ok: false, error: "start/end 参数非法" });
+    expect(
+      parseUsageQueryParams(
+        new URLSearchParams(`range=custom&start=${"1".repeat(17)}&end=2000`),
+      ),
+    ).toMatchObject({ ok: false, error: "start/end 参数非法" });
+    expect(
+      parseUsageQueryParams(new URLSearchParams("range=custom&start=2000&end=2000")),
+    ).toMatchObject({ ok: false, error: "自定义时间段 start 需早于 end" });
+
+    // 预设范围携带多余 start/end：忽略，不进筛选。
+    const ignored = parseUsageQueryParams(
+      new URLSearchParams("range=7d&start=1000&end=2000"),
+    );
+    expect(ignored.ok).toBe(true);
+    if (ignored.ok) {
+      expect(ignored.value.filters.start).toBeUndefined();
+      expect(ignored.value.filters.end).toBeUndefined();
+    }
   });
 });

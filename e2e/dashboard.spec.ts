@@ -1,5 +1,20 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { mockUsageApi } from "./fixtures";
+
+/**
+ * 触发器宽度不足时 SelectValue（line-clamp-1）会把「00 时」这类短文本截断，
+ * 视觉上仍是「可见」，只能靠 scrollWidth 越过 clientWidth 判断。
+ */
+async function expectNoTruncatedValue(page: Page, labels: string[]) {
+  for (const label of labels) {
+    const overflow = await page.getByLabel(label).evaluate((node) => {
+      const value = node.querySelector('[data-slot="select-value"]');
+      return value === null ? 0 : value.scrollWidth - value.clientWidth;
+    });
+    expect(overflow, `${label} 的选中值被截断`).toBeLessThanOrEqual(1);
+  }
+}
 
 test("桌面端核心用量流程：筛选、图表、分页、详情、导出与设置", async ({ page }) => {
   const requests = await mockUsageApi(page);
@@ -18,6 +33,42 @@ test("桌面端核心用量流程：筛选、图表、分页、详情、导出�
   await expect.poll(() => requests.some((url) => url.pathname === "/api/usage/query" && url.searchParams.get("range") === "7d")).toBe(true);
   await page.getByRole("button", { name: "清除筛选" }).click();
   await expect(page.getByLabel("时间范围")).toContainText("当天");
+
+  // 自定义时间段：默认小时精度，切分钟后可选分钟，应用后才发起新查询。
+  await page.getByLabel("时间范围").click();
+  await page.getByRole("option", { name: "自定义时间段" }).click();
+  await expect(page.getByLabel("时间精度")).toContainText("小时");
+  await expect(page.getByLabel("开始分钟")).toHaveCount(0);
+  await expectNoTruncatedValue(page, ["时间精度", "开始小时", "结束小时"]);
+  await expect
+    .poll(() =>
+      requests.some(
+        (url) =>
+          url.pathname === "/api/usage/query" &&
+          url.searchParams.get("range") === "custom" &&
+          Boolean(url.searchParams.get("start")) &&
+          Boolean(url.searchParams.get("end")),
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByLabel("时间范围")).toContainText("自定义 ·");
+
+  await page.getByLabel("时间精度").click();
+  await page.getByRole("option", { name: "分钟" }).click();
+  await expect(page.getByLabel("开始分钟")).toBeVisible();
+  await expectNoTruncatedValue(page, ["时间精度", "开始小时", "开始分钟", "结束小时", "结束分钟"]);
+  await page.getByLabel("开始分钟").click();
+  await page.getByRole("option", { name: "15 分" }).click();
+
+  await page.getByLabel("开始小时").click();
+  await page.getByRole("option", { name: "10 时" }).click();
+  await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(page.getByLabel("时间范围")).toContainText("10:15–23:00");
+  await expect(page.getByLabel("结束分钟")).toContainText("00 分");
+
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByLabel("时间范围")).toContainText("当天");
+  await expect(page.getByLabel("时间精度")).toHaveCount(0);
 
   await page.getByRole("button", { name: "请求日志", exact: true }).click();
   await expect(page.getByRole("heading", { name: "请求日志" })).toBeVisible();

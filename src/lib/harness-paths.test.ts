@@ -11,6 +11,7 @@ import { kcodeRoot } from "@/lib/kcode";
 import { resolvePiDesktopSessionsDir } from "@/lib/pi-desktop";
 import { qoderSource } from "@/lib/qoder";
 import { workBuddySource } from "@/lib/workbuddy";
+import { resolveDevinDatabasePath } from "@/lib/devin";
 import { resolveZcodeDatabasePath } from "@/lib/zcode";
 
 const ENV_KEYS = [
@@ -33,6 +34,10 @@ const ENV_KEYS = [
   "ANTIGRAVITY_DATA_DIR",
   "PI_DESKTOP_DATA_DIR",
   "PI_DESKTOP_DEV",
+  "DEVIN_DATA_DIR",
+  "DEVIN_SESSIONS_DIR",
+  "DEVIN_CONFIG_HOME",
+  "DEVIN_SESSION_STORE",
 ] as const;
 const original = new Map<string, string | undefined>();
 const temporaryRoots: string[] = [];
@@ -204,6 +209,34 @@ describe("Harness 配置路径与本机实现一致", () => {
     await writeFile(path.join(configDir, "config.json"), JSON.stringify({ storage: {} }));
     await expect(resolveZcodeDatabasePath({ homeDir: home, env: {} })).resolves.toBe(
       path.join(home, ".zcode", "cli", "db", "db.sqlite"),
+    );
+  });
+
+  it("Devin 对齐 devin.exe：配置根下 cli/sessions.db，面板 DATA_DIR 优先于官方变量", () => {
+    // 默认：appData 注入的配置根（Windows 实机为 %APPDATA%\devin）。
+    expect(
+      resolveDevinDatabasePath({
+        env: {},
+        homeDir: "C:\\Users\\tester",
+        appDataDir: "C:\\Users\\tester\\AppData\\Roaming",
+      }),
+    ).toBe(path.join("C:\\Users\\tester\\AppData\\Roaming", "devin", "cli", "sessions.db"));
+
+    // 官方 DEVIN_SESSIONS_DIR 直接指向含 sessions.db 的目录。
+    process.env.DEVIN_SESSIONS_DIR = "  D:\\devin-sessions  ";
+    expect(resolveDevinDatabasePath()).toBe(path.join("D:", "devin-sessions", "sessions.db"));
+    delete process.env.DEVIN_SESSIONS_DIR;
+
+    // 官方 DEVIN_CONFIG_HOME 覆盖配置根。
+    process.env.DEVIN_CONFIG_HOME = "D:\\devin-config";
+    expect(resolveDevinDatabasePath()).toBe(
+      path.join("D:", "devin-config", "cli", "sessions.db"),
+    );
+
+    // 面板专用 DEVIN_DATA_DIR 优先级最高（对齐 ZCODE_DATA_DIR 约定）。
+    process.env.DEVIN_DATA_DIR = "D:\\devin-root";
+    expect(resolveDevinDatabasePath()).toBe(
+      path.join("D:", "devin-root", "cli", "sessions.db"),
     );
   });
 

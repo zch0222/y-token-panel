@@ -27,6 +27,9 @@ function stubDataDirectories(): void {
     "DSH_HOME",
     "ANTIGRAVITY_DATA_DIR",
     "PI_DESKTOP_DATA_DIR",
+    "DEVIN_DATA_DIR",
+    "DEVIN_SESSIONS_DIR",
+    "DEVIN_CONFIG_HOME",
   ];
   for (const variable of variables) {
     vi.stubEnv(variable, path.join(root, "missing", variable));

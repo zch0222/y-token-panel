@@ -3,9 +3,11 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  parseKcodeConfigFile,
   parseKcodeProjectsFile,
   parseKcodeWireFile,
   resolveKcodeProjectName,
+  type KcodeConfiguredModel,
 } from "@/lib/kcode-session";
 import type { HarnessUsage, UsageRecord } from "@/lib/usage";
 
@@ -57,7 +59,10 @@ export async function readKcodeUsage(): Promise<HarnessUsage> {
     throw error;
   }
 
-  const projectNames = await readProjectNames(path.join(root, "projects.json"));
+  const [projectNames, configuredModels] = await Promise.all([
+    readOptionalKcodeMap(path.join(root, "projects.json"), parseKcodeProjectsFile),
+    readKcodeConfig(path.join(root, "config.toml")),
+  ]);
 
   for (const workspace of workspaces) {
     if (!workspace.isDirectory()) continue;
@@ -106,6 +111,7 @@ export async function readKcodeUsage(): Promise<HarnessUsage> {
           sessionId: session.name,
           agent: agent.name,
           file: wirePath,
+          models: configuredModels,
         })) {
           if (seen.has(record.id)) continue;
           seen.add(record.id);
@@ -126,13 +132,21 @@ export async function readKcodeUsage(): Promise<HarnessUsage> {
   };
 }
 
-async function readProjectNames(
-  projectsPath: string,
-): Promise<Map<string, string>> {
+/** 读取 `~/.kimi-code/config.toml` 的 `[models.*]` 映射；缺失或不可读时返回空 Map。 */
+export function readKcodeConfig(
+  configPath: string,
+): Promise<Map<string, KcodeConfiguredModel>> {
+  return readOptionalKcodeMap(configPath, parseKcodeConfigFile);
+}
+
+async function readOptionalKcodeMap<V>(
+  filePath: string,
+  parse: (content: string) => Map<string, V>,
+): Promise<Map<string, V>> {
   try {
-    return parseKcodeProjectsFile(await readFile(projectsPath, "utf8"));
+    return parse(await readFile(filePath, "utf8"));
   } catch {
-    // 注册表缺失或读失败时退回目录名解析。
+    // 配置 / 注册表缺失或读失败时退回默认规则，不阻断用量统计。
     return new Map();
   }
 }

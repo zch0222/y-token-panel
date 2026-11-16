@@ -12,11 +12,15 @@ export const HARNESS_OPTIONS = [
   { id: "dsh", label: "DeepSeek Harness", description: "DeepSeek Harness CLI / Desktop 本地会话" },
   { id: "antigravity", label: "Antigravity", description: "Google Antigravity IDE / CLI 本地会话" },
   { id: "pidesktop", label: "Pi Desktop", description: "PI-Desktop 桌面端本地会话" },
+  { id: "devin", label: "Devin", description: "Devin Desktop / CLI 本地会话" },
 ] as const;
 
 export type HarnessId = (typeof HARNESS_OPTIONS)[number]["id"];
 export type HarnessFilter = "all" | HarnessId;
-export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all";
+export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all" | "custom";
+
+/** 趋势图聚合粒度；custom 按跨度自适应分档。 */
+export type TrendGranularity = "minute" | "hour" | "day";
 export type MetricKey = "credits" | "requests" | "tokens" | "cacheRate";
 export type GroupDimension = "model" | "provider" | "project" | "harness";
 export type InputTokenSemantics = "fresh" | "total";
@@ -112,6 +116,10 @@ export interface UsageSnapshotResponse extends UsageResponse {
 /** 聚合查询的筛选条件；与前端筛选栏一一对应。 */
 export interface UsageQueryFilters {
   range: RangeKey;
+  /** 自定义时间段的起点（epoch 毫秒，闭区间）；仅 range === "custom" 时有效。 */
+  start?: number;
+  /** 自定义时间段的终点（epoch 毫秒，闭区间）；仅 range === "custom" 时有效。 */
+  end?: number;
   harness: HarnessFilter;
   project: string;
   provider: string;
@@ -232,6 +240,7 @@ export const RANGE_OPTIONS: Array<{ value: RangeKey; label: string }> = [
   { value: "yesterday", label: "昨天" },
   { value: "7d", label: "近 7 天" },
   { value: "30d", label: "近 30 天" },
+  { value: "custom", label: "自定义时间段" },
   { value: "all", label: "全部时间" },
 ];
 
@@ -249,6 +258,12 @@ function matchesBilling(record: UsageRecord, billing: BillingFilter): boolean {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+/** custom 跨度 ≤ 6 小时按分钟聚合，≤ 7 天按小时，更长按日期。 */
+const MINUTE_GRANULARITY_MAX_SPAN_MS = 6 * HOUR_MS;
+const HOUR_GRANULARITY_MAX_SPAN_MS = 7 * DAY_MS;
+/** custom 按日期聚合时最多铺满 366 天空桶；更长跨度只为出现过的日期建桶（同 all）。 */
+const DAY_SCAFFOLD_MAX_SPAN_MS = 366 * DAY_MS;
 const pad = (value: number) => String(value).padStart(2, "0");
 
 export function startOfDay(date: Date): Date {
@@ -266,6 +281,55 @@ export function getRangeBounds(range: RangeKey, now = new Date()) {
   return { start: 0, end: Number.POSITIVE_INFINITY };
 }
 
+/**
+ * 解析筛选条件的时间边界；custom 必须显式给出 start/end，缺失时直接抛错，
+ * 避免静默退化为全部时间（解析层已在 400 拦截，这里是纵深防御）。
+ */
+export function resolveRangeBounds(
+  filters: Pick<UsageQueryFilters, "range" | "start" | "end">,
+  now = new Date(),
+): { start: number; end: number } {
+  if (filters.range === "custom") {
+    const { start, end } = filters;
+    if (start === undefined || end === undefined) {
+      throw new Error("自定义时间段缺少 start/end");
+    }
+    return { start, end };
+  }
+  return getRangeBounds(filters.range, now);
+}
+
+/** 趋势聚合粒度：预设沿用原有口径（当天/昨天按小时，其余按日期），custom 按跨度分档。 */
+export function getTrendGranularity(
+  range: RangeKey,
+  start?: number,
+  end?: number,
+): TrendGranularity {
+  if (range === "today" || range === "yesterday") return "hour";
+  if (range !== "custom" || start === undefined || end === undefined) return "day";
+  const span = end - start;
+  if (span <= MINUTE_GRANULARITY_MAX_SPAN_MS) return "minute";
+  if (span <= HOUR_GRANULARITY_MAX_SPAN_MS) return "hour";
+  return "day";
+}
+
+/** 进入自定义时间段的默认窗口：今天 00:00 ～ 今天 23:00。 */
+export function defaultCustomRange(now = new Date()): { start: number; end: number } {
+  const day = startOfDay(now).getTime();
+  return { start: day, end: day + 23 * HOUR_MS };
+}
+
+/** 筛选触发器显示的自定义时间段文案：同天 “11-15 10:00–11:30”，跨天带各自日期。 */
+export function formatCustomRangeLabel(start: number, end: number): string {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const day = (date: Date) => `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const clock = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const startText = `${day(startDate)} ${clock(startDate)}`;
+  const endText = dateKey(end) === dateKey(start) ? clock(endDate) : `${day(endDate)} ${clock(endDate)}`;
+  return `${startText}–${endText}`;
+}
+
 export function filterUsageRecords(
   records: UsageRecord[],
   range: RangeKey,
@@ -275,8 +339,12 @@ export function filterUsageRecords(
   now = new Date(),
   harness: HarnessFilter = "all",
   billing: BillingFilter = "all",
+  custom?: { start?: number; end?: number },
 ): UsageRecord[] {
-  const { start, end } = getRangeBounds(range, now);
+  const { start, end } = resolveRangeBounds(
+    { range, start: custom?.start, end: custom?.end },
+    now,
+  );
   return records
     .filter(
       (record) =>
@@ -366,6 +434,33 @@ function dateKey(timestamp: number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+/** 与 SQL strftime('%Y-%m-%d %H', …, 'localtime') 一致的小时桶 key。 */
+function hourKey(timestamp: number): string {
+  return `${dateKey(timestamp)} ${pad(new Date(timestamp).getHours())}`;
+}
+
+/** 与 SQL strftime('%Y-%m-%d %H:%M', …, 'localtime') 一致的分钟桶 key。 */
+function minuteKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${dateKey(timestamp)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function floorHour(timestamp: number): number {
+  const date = new Date(timestamp);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours()).getTime();
+}
+
+function floorMinute(timestamp: number): number {
+  const date = new Date(timestamp);
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    date.getHours(),
+    date.getMinutes(),
+  ).getTime();
+}
+
 function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
   return {
     key,
@@ -385,14 +480,68 @@ function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
 /**
  * 趋势桶脚手架：按范围生成从早到晚的空桶。`all` 范围只为出现过的日期
  * （presentDayKeys，升序）建桶；服务端聚合时传入 SQL 分组得到的日期键。
+ * `custom` 按 getTrendGranularity 的粒度铺桶（边界缺省时返回空脚手架，
+ * 正常链路由 resolveRangeBounds 先行拦截）。
  */
 export function createTrendPoints(
   range: RangeKey,
   now = new Date(),
   presentDayKeys: string[] = [],
+  custom?: { start?: number; end?: number },
 ): Map<string, TrendPoint> {
   const points = new Map<string, TrendPoint>();
+  const granularity = getTrendGranularity(range, custom?.start, custom?.end);
   const hourly = range === "today" || range === "yesterday";
+
+  if (range === "custom") {
+    const { start, end } = custom ?? {};
+    if (start === undefined || end === undefined) return points;
+    if (granularity === "minute") {
+      for (let timestamp = floorMinute(start); timestamp <= end; timestamp += 60_000) {
+        const key = minuteKey(timestamp);
+        const next = minuteKey(timestamp + 60_000);
+        // 桶区间文案与小时桶一致：同天右侧只带时间，跨天带完整日期。
+        const fullLabel =
+          key.slice(0, 10) === next.slice(0, 10) ? `${key}–${next.slice(11)}` : `${key}–${next}`;
+        points.set(key, emptyPoint(key, key.slice(11), fullLabel));
+      }
+    } else if (granularity === "hour") {
+      // 跨天的 custom 小时桶在 label 上带日期前缀，避免连续多天出现重复的 “10:00”。
+      const sameDay = dateKey(start) === dateKey(end);
+      for (let timestamp = floorHour(start); timestamp <= end; timestamp += HOUR_MS) {
+        const key = hourKey(timestamp);
+        const date = new Date(timestamp);
+        const clock = `${pad(date.getHours())}:00`;
+        points.set(
+          key,
+          emptyPoint(
+            key,
+            sameDay ? clock : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`,
+            `${key}:00–${pad((date.getHours() + 1) % 24)}:00`,
+          ),
+        );
+      }
+    } else if (end - start <= DAY_SCAFFOLD_MAX_SPAN_MS) {
+      for (let timestamp = startOfDay(new Date(start)).getTime(); timestamp <= end; timestamp += DAY_MS) {
+        const key = dateKey(timestamp);
+        const date = new Date(timestamp);
+        points.set(
+          key,
+          emptyPoint(key, `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`, key),
+        );
+      }
+    } else {
+      // 超长跨度只为出现过的日期建桶，与 all 分支一致。
+      for (const day of Array.from(new Set(presentDayKeys)).sort()) {
+        const date = new Date(`${day}T00:00:00`);
+        points.set(
+          day,
+          emptyPoint(day, `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`, day),
+        );
+      }
+    }
+    return points;
+  }
 
   if (hourly) {
     const today = startOfDay(now).getTime();
@@ -437,18 +586,23 @@ export function buildTrend(
   records: UsageRecord[],
   range: RangeKey,
   now = new Date(),
+  custom?: { start?: number; end?: number },
 ): TrendPoint[] {
   const points = createTrendPoints(
     range,
     now,
     records.map((record) => dateKey(record.timestamp)),
+    custom,
   );
-  const hourly = range === "today" || range === "yesterday";
+  const granularity = getTrendGranularity(range, custom?.start, custom?.end);
 
   for (const record of records) {
-    const key = hourly
-      ? `${dateKey(record.timestamp)} ${pad(new Date(record.timestamp).getHours())}`
-      : dateKey(record.timestamp);
+    const key =
+      granularity === "minute"
+        ? minuteKey(record.timestamp)
+        : granularity === "hour"
+          ? hourKey(record.timestamp)
+          : dateKey(record.timestamp);
     const point = points.get(key);
     if (!point) continue;
     point.tokens += record.totalTokens;
