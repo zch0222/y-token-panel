@@ -3,6 +3,10 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  attachQoderStateRecords,
+  type QoderStateFileMeta,
+} from "@/lib/qoder-state";
+import {
   getProjectLabel,
   type HarnessUsage,
   type UsageRecord,
@@ -138,6 +142,30 @@ export function parseSessionLine(
   };
 }
 
+/** 会话目录内聚合用量文件；<project>/<sessionId>/state.json（compression-v2 等更深层的同名文件不是用量库）。 */
+const QODER_STATE_FILE = "state.json";
+
+/** 从一行 jsonl 里提取 cwd（workspace 路径），供 state.json 解密的 AAD 候选。 */
+export function extractQoderCwd(line: string): { sessionId?: string; cwd?: string } {
+  if (!line.includes("\"cwd\"")) return {};
+  try {
+    const parsed = JSON.parse(line) as { cwd?: unknown; sessionId?: unknown };
+    const cwd = typeof parsed.cwd === "string" && parsed.cwd !== "" ? parsed.cwd : undefined;
+    const sessionId =
+      typeof parsed.sessionId === "string" && parsed.sessionId !== ""
+        ? parsed.sessionId
+        : undefined;
+    return cwd === undefined ? {} : { sessionId, cwd };
+  } catch {
+    return {};
+  }
+}
+
+/** 项目目录名反推 workspace 路径："-Users-zch-code-x" → "/Users/zch/code/x"，"-" → "/"。 */
+export function qoderDerivedWorkspaceRoot(projectDirName: string): string {
+  return "/" + projectDirName.replace(/^-/, "").replace(/-/g, "/");
+}
+
 const QODER_BLOCKED_DIR_NAMES = new Set([
   ".git",
   ".svn",
@@ -192,11 +220,30 @@ export async function readQoderUsage(): Promise<HarnessUsage> {
   const source = qoderSource();
   const records: UsageRecord[] = [];
   const seen = new Set<string>();
+  const stateFiles: QoderStateFileMeta[] = [];
+  const cwdsBySession = new Map<string, string[]>();
   let scannedFiles = 0;
   let skippedFiles = 0;
   let sourceAvailable = true;
 
-  async function scanDirectory(directory: string, project: string, isRoot = false) {
+  function collectCwd(line: string, fallbackSessionId: string) {
+    const { sessionId, cwd } = extractQoderCwd(line);
+    if (cwd === undefined) return;
+    const key = sessionId ?? fallbackSessionId;
+    const existing = cwdsBySession.get(key);
+    if (existing === undefined) {
+      cwdsBySession.set(key, [cwd]);
+    } else if (!existing.includes(cwd)) {
+      existing.push(cwd);
+    }
+  }
+
+  async function scanDirectory(
+    directory: string,
+    project: string,
+    depth: number,
+    isRoot = false,
+  ) {
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -216,17 +263,33 @@ export async function readQoderUsage(): Promise<HarnessUsage> {
         await scanDirectory(
           entryPath,
           project || getProjectLabel(entry.name),
+          depth + 1,
         );
         continue;
       }
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      if (!entry.isFile()) continue;
+      // 会话目录（<project>/<sessionId>）里的聚合用量库。
+      if (depth === 3 && entry.name === QODER_STATE_FILE) {
+        scannedFiles += 1;
+        stateFiles.push({
+          filePath: entryPath,
+          sessionId: path.basename(directory),
+          project: project || "未知项目",
+          artifactDir: path.dirname(directory),
+          derivedRoot: qoderDerivedWorkspaceRoot(path.basename(path.dirname(directory))),
+        });
+        continue;
+      }
+      if (!entry.name.endsWith(".jsonl")) continue;
 
       scannedFiles += 1;
       try {
         const content = await readFile(entryPath, "utf8");
         const lines = content.split(/\r?\n/);
+        const fileSessionId = path.basename(entry.name, ".jsonl");
         for (let index = 0; index < lines.length; index += 1) {
           if (!lines[index].trim()) continue;
+          collectCwd(lines[index], fileSessionId);
           const record = parseSessionLine(
             lines[index],
             project || "未知项目",
@@ -243,13 +306,17 @@ export async function readQoderUsage(): Promise<HarnessUsage> {
     }
   }
 
-  await scanDirectory(source, "", true);
-  records.sort((a, b) => b.timestamp - a.timestamp);
+  await scanDirectory(source, "", 1, true);
+
+  // 1.1.86 起逐请求 usage 只保留在加密 state.json 的会话聚合里；按会话差值
+  // 补一条记录，与 jsonl 逐请求记录合并后即完整口径（差值为零的老会话不产出）。
+  const attached = await attachQoderStateRecords(stateFiles, cwdsBySession, records);
+  attached.records.sort((a, b) => b.timestamp - a.timestamp);
   return {
     harness: "qoder",
-    records,
+    records: attached.records,
     scannedFiles,
-    skippedFiles,
+    skippedFiles: skippedFiles + attached.skippedFiles,
     source,
     sourceAvailable,
   };
