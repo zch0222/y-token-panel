@@ -127,22 +127,57 @@ async function createDevinDatabase(
 }
 
 describe("resolveDevinDatabasePath", () => {
-  it("默认为配置根下 cli/sessions.db（appData 注入）", () => {
+  it("Windows 默认 %APPDATA%\\devin 下 cli/sessions.db（appData 注入）", () => {
     expect(
       resolveDevinDatabasePath({
         env: {},
         homeDir: "C:\\Users\\tester",
         appDataDir: "C:\\Users\\tester\\AppData\\Roaming",
+        platform: "win32",
       }),
     ).toBe(path.join("C:\\Users\\tester\\AppData\\Roaming", "devin", "cli", "sessions.db"));
   });
 
-  it("面板 DEVIN_DATA_DIR 替换配置根且优先级最高", () => {
-    process.env.DEVIN_SESSIONS_DIR = path.join("D:", "sessions-elsewhere");
-    process.env.DEVIN_CONFIG_HOME = path.join("D:", "config-home");
-    process.env.DEVIN_DATA_DIR = "  D:\\devin-root  ";
+  it("macOS/Linux 默认 ~/.local/share/devin 下 cli/sessions.db，跟随 XDG_DATA_HOME", () => {
+    // macOS 实测布局（troubleshooting.mdx：macOS/Linux 数据均在
+    // ~/.local/share/devin/cli），不是 ~/Library/Application Support。
+    expect(
+      resolveDevinDatabasePath({ env: {}, homeDir: "/Users/tester", platform: "darwin" }),
+    ).toBe(path.join("/Users/tester", ".local", "share", "devin", "cli", "sessions.db"));
+    expect(
+      resolveDevinDatabasePath({ env: {}, homeDir: "/home/tester", platform: "linux" }),
+    ).toBe(path.join("/home/tester", ".local", "share", "devin", "cli", "sessions.db"));
+    expect(
+      resolveDevinDatabasePath({
+        env: { XDG_DATA_HOME: "/xdg/data  " },
+        homeDir: "/home/tester",
+        platform: "linux",
+      }),
+    ).toBe(path.join(path.resolve("/xdg/data"), "devin", "cli", "sessions.db"));
+  });
+
+  it("DEVIN_CONFIG_HOME 只覆盖 Windows 数据根，macOS/Linux 忽略（CLI 二进制无该变量）", () => {
+    expect(
+      resolveDevinDatabasePath({
+        env: { DEVIN_CONFIG_HOME: "/win-cfg" },
+        platform: "win32",
+      }),
+    ).toBe(path.join(path.resolve("/win-cfg"), "cli", "sessions.db"));
+    expect(
+      resolveDevinDatabasePath({
+        env: { DEVIN_CONFIG_HOME: "/cfg" },
+        homeDir: "/Users/tester",
+        platform: "darwin",
+      }),
+    ).toBe(path.join("/Users/tester", ".local", "share", "devin", "cli", "sessions.db"));
+  });
+
+  it("面板 DEVIN_DATA_DIR 替换数据根且优先级最高", () => {
+    process.env.DEVIN_SESSIONS_DIR = "/data/sessions-elsewhere";
+    process.env.DEVIN_CONFIG_HOME = "/data/config-home";
+    process.env.DEVIN_DATA_DIR = "  /data/devin-root  ";
     expect(resolveDevinDatabasePath()).toBe(
-      path.join("D:", "devin-root", "cli", "sessions.db"),
+      path.join(path.resolve("/data/devin-root"), "cli", "sessions.db"),
     );
   });
 
@@ -150,32 +185,48 @@ describe("resolveDevinDatabasePath", () => {
     expect(
       resolveDevinDatabasePath({
         env: {
-          DEVIN_SESSIONS_DIR: "D:\\sessions-dir",
-          DEVIN_CONFIG_HOME: "D:\\config-home",
+          DEVIN_SESSIONS_DIR: "/data/sessions-dir",
+          DEVIN_CONFIG_HOME: "/data/config-home",
         },
       }),
-    ).toBe(path.join("D:", "sessions-dir", "sessions.db"));
+    ).toBe(path.join(path.resolve("/data/sessions-dir"), "sessions.db"));
   });
 
-  it("官方 DEVIN_CONFIG_HOME 覆盖配置根，空白按未设置", () => {
-    expect(resolveDevinDatabasePath({ env: { DEVIN_CONFIG_HOME: "  D:\\cfg  " } })).toBe(
-      path.join("D:", "cfg", "cli", "sessions.db"),
-    );
+  it("Windows 下 DEVIN_CONFIG_HOME 空白按未设置", () => {
     expect(
       resolveDevinDatabasePath({
         env: { DEVIN_CONFIG_HOME: "   " },
         homeDir: "C:\\Users\\tester",
         appDataDir: "C:\\Users\\tester\\AppData\\Roaming",
+        platform: "win32",
       }),
     ).toBe(path.join("C:\\Users\\tester\\AppData\\Roaming", "devin", "cli", "sessions.db"));
   });
 });
 
 describe("devinConfigRoot", () => {
-  it("注入 appDataDir 时不再读平台默认", () => {
+  it("Windows 注入 appDataDir 时不再读平台默认", () => {
     expect(
-      devinConfigRoot({ env: {}, homeDir: "C:\\Users\\tester", appDataDir: "D:\\appdata" }),
-    ).toBe(path.join("D:", "appdata", "devin"));
+      devinConfigRoot({
+        env: {},
+        homeDir: "C:\\Users\\tester",
+        appDataDir: "D:\\appdata",
+        platform: "win32",
+      }),
+    ).toBe(path.join("D:\\appdata", "devin"));
+  });
+
+  it("macOS/Linux 默认 ~/.config/devin，跟随 XDG_CONFIG_HOME（无 DEVIN_CONFIG_HOME）", () => {
+    expect(
+      devinConfigRoot({ env: {}, homeDir: "/Users/tester", platform: "darwin" }),
+    ).toBe(path.join("/Users/tester", ".config", "devin"));
+    expect(
+      devinConfigRoot({
+        env: { XDG_CONFIG_HOME: "/xdg/config", DEVIN_CONFIG_HOME: "/ignored" },
+        homeDir: "/home/tester",
+        platform: "linux",
+      }),
+    ).toBe(path.join(path.resolve("/xdg/config"), "devin"));
   });
 });
 
@@ -376,6 +427,63 @@ describe("readDevinUsage", () => {
     const usage = await readDevinUsage();
     expect(usage.sourceAvailable).toBe(false);
     expect(usage.skippedFiles).toBe(0);
+  });
+
+  it("env DEVIN_SESSION_STORE=sqlite 显式覆盖 config.json 的 files（设置面板 overrides 语义）", async () => {
+    await createDevinDatabase(
+      [{ id: "upbeat-crater", workingDirectory: "/Users/tester/code/anynote" }],
+      [
+        {
+          sessionId: "upbeat-crater",
+          nodeId: 1,
+          createdAt: 1_794_600_100,
+          chatMessage: assistantMessage({
+            requestId: "r1",
+            metrics: { input_tokens: 5, output_tokens: 5 },
+          }),
+        },
+      ],
+    );
+    await writeFile(path.join(root, "config.json"), JSON.stringify({ session_store: "files" }));
+    process.env.DEVIN_DATA_DIR = root;
+    process.env.DEVIN_SESSION_STORE = "sqlite";
+
+    const usage = await readDevinUsage();
+    expect(usage.sourceAvailable).toBe(true);
+    expect(usage.records).toHaveLength(1);
+  });
+
+  it("DEVIN_DATA_DIR 下无 config.json 时回退平台配置根读取 session_store", async () => {
+    await createDevinDatabase(
+      [{ id: "upbeat-crater", workingDirectory: "/Users/tester/code/anynote" }],
+      [
+        {
+          sessionId: "upbeat-crater",
+          nodeId: 1,
+          createdAt: 1_794_600_100,
+          chatMessage: assistantMessage({
+            requestId: "r1",
+            metrics: { input_tokens: 5, output_tokens: 5 },
+          }),
+        },
+      ],
+    );
+    process.env.DEVIN_DATA_DIR = root;
+    // 平台配置根注入到 DATA_DIR 之外的位置并声明 files：数据根沙箱内无
+    // config.json，应以平台配置根为准判定库陈旧。
+    const configHome = path.join(root, "platform-config");
+    await mkdir(path.join(configHome, "devin"), { recursive: true });
+    await writeFile(
+      path.join(configHome, "devin", "config.json"),
+      JSON.stringify({ session_store: "files" }),
+    );
+
+    const usage = await readDevinUsage({
+      env: { ...process.env, XDG_CONFIG_HOME: configHome },
+      platform: "darwin",
+    });
+    expect(usage.sourceAvailable).toBe(false);
+    expect(usage.records).toHaveLength(0);
   });
 
   it("config.json 损坏或字段类型不对时按默认 sqlite 处理", async () => {

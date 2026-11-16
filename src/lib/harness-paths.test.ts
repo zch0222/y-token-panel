@@ -70,33 +70,37 @@ describe("Harness 配置路径与本机实现一致", () => {
   it("CodeBuddy CONFIG_DIR 是配置根且空白按未设置，DATA_DIR 才是 projects 直接覆盖", () => {
     process.env.CODEBUDDY_CONFIG_DIR = "   ";
     expect(codeBuddySource()).toBe(path.join(homedir(), ".codebuddy", "projects"));
-    process.env.CODEBUDDY_CONFIG_DIR = path.join("D:", "codebuddy-home");
-    expect(codeBuddySource()).toBe(path.join("D:", "codebuddy-home", "projects"));
-    process.env.CODEBUDDY_DATA_DIR = path.join("D:", "projects-only");
-    expect(codeBuddySource()).toBe(path.join("D:", "projects-only"));
+    process.env.CODEBUDDY_CONFIG_DIR = "/data/codebuddy-home";
+    expect(codeBuddySource()).toBe(path.join(path.resolve("/data/codebuddy-home"), "projects"));
+    process.env.CODEBUDDY_DATA_DIR = "/data/projects-only";
+    expect(codeBuddySource()).toBe(path.resolve("/data/projects-only"));
   });
 
   it("WorkBuddy 只认 WORKBUDDY_DATA_DIR / WORKBUDDY_CONFIG_DIR，不把 INSTANCE_NUMBER 当目录后缀，也不串读 CODEBUDDY_CONFIG_DIR", () => {
     process.env.WORKBUDDY_INSTANCE_NUMBER = "2";
-    process.env.CODEBUDDY_CONFIG_DIR = path.join("D:", "codebuddy-home");
+    process.env.CODEBUDDY_CONFIG_DIR = "/data/codebuddy-home";
     expect(workBuddySource()).toBe(path.join(homedir(), ".workbuddy", "projects"));
-    process.env.WORKBUDDY_CONFIG_DIR = "  D:\\workbuddy-custom  ";
-    expect(workBuddySource()).toBe(path.join("D:\\workbuddy-custom", "projects"));
-    process.env.WORKBUDDY_DATA_DIR = "  D:\\workbuddy-data  ";
-    expect(workBuddySource()).toBe(path.join("D:\\workbuddy-data", "projects"));
+    process.env.WORKBUDDY_CONFIG_DIR = "  /data/workbuddy-custom  ";
+    expect(workBuddySource()).toBe(path.join(path.resolve("/data/workbuddy-custom"), "projects"));
+    process.env.WORKBUDDY_DATA_DIR = "  /data/workbuddy-data  ";
+    expect(workBuddySource()).toBe(path.join(path.resolve("/data/workbuddy-data"), "projects"));
   });
 
   it("Qoder CN 对齐 WV/pxt 与 SDK Na/Te：CONFIG_DIR 是完整根，CLI_HOME 拼接 CONFIG_DIR_NAME", () => {
-    process.env.QODERCN_CLI_HOME = path.join("D:", "qoder-cli");
-    expect(qoderSource()).toBe(path.join("D:", "qoder-cli", ".qoder-cn", "projects"));
+    process.env.QODERCN_CLI_HOME = "/data/qoder-cli";
+    expect(qoderSource()).toBe(
+      path.join(path.resolve("/data/qoder-cli"), ".qoder-cn", "projects"),
+    );
     process.env.QODERCN_CONFIG_DIR_NAME = ".qoder-enterprise";
-    expect(qoderSource()).toBe(path.join("D:", "qoder-cli", ".qoder-enterprise", "projects"));
+    expect(qoderSource()).toBe(
+      path.join(path.resolve("/data/qoder-cli"), ".qoder-enterprise", "projects"),
+    );
     process.env.QODERCN_CONFIG_DIR_NAME = "../bad";
     expect(() => qoderSource()).toThrow(/QODERCN_CONFIG_DIR_NAME/);
-    process.env.QODERCN_CONFIG_DIR = path.join("D:", "qoder-config");
-    expect(qoderSource()).toBe(path.join("D:", "qoder-config", "projects"));
-    process.env.QODER_DATA_DIR = path.join("D:", "qoder-projects");
-    expect(qoderSource()).toBe(path.join("D:", "qoder-projects"));
+    process.env.QODERCN_CONFIG_DIR = "/data/qoder-config";
+    expect(qoderSource()).toBe(path.join(path.resolve("/data/qoder-config"), "projects"));
+    process.env.QODER_DATA_DIR = "/data/qoder-projects";
+    expect(qoderSource()).toBe(path.resolve("/data/qoder-projects"));
   });
 
   it("DSH 忽略空白 HOME，并按官方范围展开波浪号", () => {
@@ -115,12 +119,12 @@ describe("Harness 配置路径与本机实现一致", () => {
     expect(kcodeRoot()).toBe(path.join(homedir(), "kimi-custom"));
 
     expect(claudeSource()).toBe(path.join(homedir(), ".claude", "projects"));
-    process.env.CLAUDE_CONFIG_DIR = path.join("D:", "claude-acc");
-    expect(claudeSource()).toBe(path.join("D:", "claude-acc", "projects"));
+    process.env.CLAUDE_CONFIG_DIR = "/data/claude-acc";
+    expect(claudeSource()).toBe(path.join(path.resolve("/data/claude-acc"), "projects"));
 
     expect(codexRoot()).toBe(path.join(homedir(), ".codex"));
-    process.env.CODEX_HOME = path.join("D:", "codex-custom");
-    expect(codexRoot()).toBe(path.join("D:", "codex-custom"));
+    process.env.CODEX_HOME = "/data/codex-custom";
+    expect(codexRoot()).toBe(path.resolve("/data/codex-custom"));
   });
 
   it("Antigravity 默认同时尝试 IDE 与 CLI 根，面板 DATA_DIR 覆盖为单一根", () => {
@@ -128,8 +132,8 @@ describe("Harness 配置路径与本机实现一致", () => {
       path.join(homedir(), ".gemini", "antigravity"),
       path.join(homedir(), ".gemini", "antigravity-cli"),
     ]);
-    process.env.ANTIGRAVITY_DATA_DIR = "  D:\\antigravity-data  ";
-    expect(antigravityRoots()).toEqual([path.resolve("D:\\antigravity-data")]);
+    process.env.ANTIGRAVITY_DATA_DIR = "  /data/antigravity-data  ";
+    expect(antigravityRoots()).toEqual([path.resolve("/data/antigravity-data")]);
     process.env.ANTIGRAVITY_DATA_DIR = "   ";
     expect(antigravityRoots()).toEqual([
       path.join(homedir(), ".gemini", "antigravity"),
@@ -138,10 +142,10 @@ describe("Harness 配置路径与本机实现一致", () => {
   });
 
   it("ZCode 面板 DATA_DIR 优先于官方会话库配置", async () => {
-    process.env.ZCODE_DATA_DIR = path.join("D:", "zcode-root");
-    process.env.ZCODE_SESSION_DB_PATH = path.join("D:", "elsewhere.sqlite");
+    process.env.ZCODE_DATA_DIR = "/data/zcode-root";
+    process.env.ZCODE_SESSION_DB_PATH = "/data/elsewhere.sqlite";
     await expect(resolveZcodeDatabasePath()).resolves.toBe(
-      path.join("D:", "zcode-root", "cli", "db", "db.sqlite"),
+      path.join(path.resolve("/data/zcode-root"), "cli", "db", "db.sqlite"),
     );
   });
 
@@ -157,11 +161,11 @@ describe("Harness 配置路径与本机实现一致", () => {
     await expect(
       resolveZcodeDatabasePath({
         env: {
-          ZCODE_SESSION_DB_PATH: "D:\\primary.sqlite",
-          ZCODE_SESSION_DB: "D:\\legacy-override.sqlite",
+          ZCODE_SESSION_DB_PATH: "/data/primary.sqlite",
+          ZCODE_SESSION_DB: "/data/legacy-override.sqlite",
         },
       }),
-    ).resolves.toBe("D:\\legacy-override.sqlite");
+    ).resolves.toBe(path.resolve("/data/legacy-override.sqlite"));
   });
 
   it("ZCode 从 cli/config.json 读取 storage.sessionDbPath，损坏或类型非法时静默回退默认库", async () => {
@@ -212,31 +216,44 @@ describe("Harness 配置路径与本机实现一致", () => {
     );
   });
 
-  it("Devin 对齐 devin.exe：配置根下 cli/sessions.db，面板 DATA_DIR 优先于官方变量", () => {
-    // 默认：appData 注入的配置根（Windows 实机为 %APPDATA%\devin）。
+  it("Devin：Windows 对齐 devin.exe（%APPDATA%/DEVIN_CONFIG_HOME 根），macOS/Linux 对齐 XDG 数据目录", () => {
+    // Windows 默认：appData 注入的根（实机为 %APPDATA%\devin）。
     expect(
       resolveDevinDatabasePath({
         env: {},
         homeDir: "C:\\Users\\tester",
         appDataDir: "C:\\Users\\tester\\AppData\\Roaming",
+        platform: "win32",
       }),
     ).toBe(path.join("C:\\Users\\tester\\AppData\\Roaming", "devin", "cli", "sessions.db"));
 
+    // macOS/Linux 默认 ~/.local/share/devin（官方 troubleshooting 文档与本机
+    // macOS 实测库位置），非 ~/Library/Application Support。
+    expect(
+      resolveDevinDatabasePath({ env: {}, homeDir: "/Users/tester", platform: "darwin" }),
+    ).toBe(path.join("/Users/tester", ".local", "share", "devin", "cli", "sessions.db"));
+
     // 官方 DEVIN_SESSIONS_DIR 直接指向含 sessions.db 的目录。
-    process.env.DEVIN_SESSIONS_DIR = "  D:\\devin-sessions  ";
-    expect(resolveDevinDatabasePath()).toBe(path.join("D:", "devin-sessions", "sessions.db"));
+    process.env.DEVIN_SESSIONS_DIR = "  /data/devin-sessions  ";
+    expect(resolveDevinDatabasePath()).toBe(
+      path.join(path.resolve("/data/devin-sessions"), "sessions.db"),
+    );
     delete process.env.DEVIN_SESSIONS_DIR;
 
-    // 官方 DEVIN_CONFIG_HOME 覆盖配置根。
-    process.env.DEVIN_CONFIG_HOME = "D:\\devin-config";
-    expect(resolveDevinDatabasePath()).toBe(
-      path.join("D:", "devin-config", "cli", "sessions.db"),
+    // 官方 DEVIN_CONFIG_HOME 只覆盖 Windows 根（仅 devin.exe 字符表有该变量）。
+    process.env.DEVIN_CONFIG_HOME = "/data/devin-config";
+    expect(resolveDevinDatabasePath({ platform: "win32" })).toBe(
+      path.join(path.resolve("/data/devin-config"), "cli", "sessions.db"),
     );
+    expect(
+      resolveDevinDatabasePath({ env: {}, homeDir: "/Users/tester", platform: "darwin" }),
+    ).toBe(path.join("/Users/tester", ".local", "share", "devin", "cli", "sessions.db"));
+    delete process.env.DEVIN_CONFIG_HOME;
 
     // 面板专用 DEVIN_DATA_DIR 优先级最高（对齐 ZCODE_DATA_DIR 约定）。
-    process.env.DEVIN_DATA_DIR = "D:\\devin-root";
+    process.env.DEVIN_DATA_DIR = "/data/devin-root";
     expect(resolveDevinDatabasePath()).toBe(
-      path.join("D:", "devin-root", "cli", "sessions.db"),
+      path.join(path.resolve("/data/devin-root"), "cli", "sessions.db"),
     );
   });
 
@@ -244,9 +261,9 @@ describe("Harness 配置路径与本机实现一致", () => {
     await expect(resolvePiDesktopSessionsDir()).resolves.toBe(
       path.join(homedir(), ".pi-desktop", "sessions"),
     );
-    process.env.PI_DESKTOP_DATA_DIR = "  D:\\pi-data  ";
+    process.env.PI_DESKTOP_DATA_DIR = "  /data/pi-data  ";
     await expect(resolvePiDesktopSessionsDir()).resolves.toBe(
-      path.join("D:", "pi-data", "sessions"),
+      path.join(path.resolve("/data/pi-data"), "sessions"),
     );
     delete process.env.PI_DESKTOP_DATA_DIR;
 
@@ -276,11 +293,11 @@ describe("Harness 配置路径与本机实现一致", () => {
     // env 覆盖时忽略迁移偏好（对齐 app 的 overridden 分支）。
     await expect(
       resolvePiDesktopSessionsDir({
-        env: { PI_DESKTOP_DATA_DIR: "D:\\pi-override" },
+        env: { PI_DESKTOP_DATA_DIR: "/data/pi-override" },
         homeDir: home,
         appDataDir: appData,
       }),
-    ).resolves.toBe(path.join("D:", "pi-override", "sessions"));
+    ).resolves.toBe(path.join(path.resolve("/data/pi-override"), "sessions"));
 
     await writeFile(preference, "{ invalid");
     await expect(

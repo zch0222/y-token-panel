@@ -6,91 +6,116 @@ import type { HarnessUsage } from "@/lib/usage";
 import { collectDevinUsage, DEVIN_USAGE_SQL } from "@/lib/devin-usage";
 
 /**
- * 读取 Devin 的本地会话库（默认 %APPDATA%\devin\cli\sessions.db，即 Devin CLI
- * 在配置根下的 cli/sessions.db；数据源与字段语义见 src/lib/devin-usage.ts 文件头）。
+ * 读取 Devin 的本地会话库（数据根下 cli/sessions.db；数据源与字段语义见
+ * src/lib/devin-usage.ts 文件头）。
  *
- * 路径解析对齐本机 devin.exe 二进制字符串表（"devin"→"cli"→"sessions.db" 与
- * DEVIN_SESSIONS_DIR / DEVIN_SESSION_STORE / DEVIN_CONFIG_HOME）与官方文档
- * （docs/extensibility/configuration.mdx：Windows "%APPDATA%\devin\config.json"、
- * 其余 "~/.config/devin/config.json"；changelog：DEVIN_SESSIONS_DIR 迁移会话库、
- * DEVIN_SESSION_STORE=files 改用文件存储）：
+ * 路径解析对齐本地实际应用代码（Windows devin.exe 与 macOS Devin.app 内
+ * extensions/windsurf/devin/bin/devin 的二进制字符串表 + 应用内官方文档）：
  *
- * 1. DEVIN_DATA_DIR 是面板专用覆盖：替换整个配置根（对齐 ZCODE_DATA_DIR 约定，
- *    不与官方变量混用），其下仍按 cli/sessions.db 布局；
- * 2. DEVIN_SESSIONS_DIR（官方）：直接指向含 sessions.db 的目录；
- * 3. DEVIN_CONFIG_HOME（官方，Desktop airgap 模式使用）：配置根；
- * 4. 平台默认配置根（Rust dirs::config_dir 惯例）：Windows %APPDATA%\devin
- *    （NTFS 大小写不敏感，与 Roaming\Devin 同一目录）、macOS
- *    ~/Library/Application Support/devin、其余 ~/.config/devin。
+ * - macOS 实测（Devin.app 1.12，本机库 ~/.local/share/devin/cli/sessions.db
+ *   运行中持续更新）：CLI 二进制含 XDG_DATA_HOME / XDG_CONFIG_HOME 与
+ *   ".local"+"share" 路径段、不含 DEVIN_CONFIG_HOME；内置文档
+ *   docs/troubleshooting.mdx 写明 macOS/Linux 日志在 ~/.local/share/devin/cli/
+ *   （即数据根），docs/extensibility/configuration.mdx 写明用户配置 Unix 在
+ *   ~/.config/devin/config.json、Windows 在 %APPDATA%\devin\config.json，
+ *   changelog 确认 config（~/.config/devin）/ data（~/.local/share/devin）/
+ *   cache（~/.cache/devin）三层目录。即 macOS/Linux 与 Rust dirs 的
+ *   ~/Library/Application Support 惯例无关，config 与 data 是两个独立的
+ *   XDG 根。
+ * - Desktop 扩展（extensions/windsurf/dist/extension.js）airgap 模式同时
+ *   设置 XDG_CONFIG_HOME=DEVIN_CONFIG_HOME=airgap 目录；DEVIN_CONFIG_HOME
+ *   只出现在 Windows devin.exe 字符表中，且 Windows 实测 config.json 与
+ *   cli/sessions.db 同在 %APPDATA%\devin（config 根 = 数据根）。
  *
- * DEVIN_SESSION_STORE=files（或 config.json 的 session_store:"files"）时 CLI 改用
- * 逐会话 log.jsonl/meta.json 文件、不再更新 SQLite（本机未使用该模式），此时库
- * 里只剩陈旧数据，按来源不可用处理，避免展示过期用量。
+ * 解析顺序：
+ *
+ * 1. DEVIN_DATA_DIR 是面板专用覆盖：替换整个数据根（对齐 ZCODE_DATA_DIR
+ *    约定，不与官方变量混用），其下仍按 cli/sessions.db 布局；
+ * 2. DEVIN_SESSIONS_DIR（官方，changelog：把会话库迁到其他目录，如 NFS
+ *    主目录时指到本地盘）：直接指向含 sessions.db 的目录；
+ * 3. 平台默认数据根：Windows %APPDATA%\devin（可被 DEVIN_CONFIG_HOME
+ *    覆盖，见上）；macOS/Linux $XDG_DATA_HOME/devin 或
+ *    ~/.local/share/devin。
+ *
+ * DEVIN_SESSION_STORE=files（或 config.json 的 session_store:"files"）时 CLI
+ * 改用逐会话 log.jsonl/meta.json 文件、不再更新 SQLite（本机未使用该模式），
+ * 此时库里只剩陈旧数据，按来源不可用处理，避免展示过期用量。config.json 从
+ * 配置根读取（macOS/Linux $XDG_CONFIG_HOME/devin 或 ~/.config/devin、
+ * Windows %APPDATA%\devin）；面板 DEVIN_DATA_DIR 替换数据根时优先读其下
+ * 的 config.json（库与配置一并沙箱化），缺失或损坏时回退平台配置根。
  */
 
-/** 依赖注入点（测试用）；默认取 process.env、homedir() 与平台配置根。 */
+/** 依赖注入点（测试用）；默认取 process.env、homedir() 与当前平台。 */
 export interface DevinPathOptions {
   env?: Record<string, string | undefined>;
   homeDir?: string;
+  /** Windows %APPDATA% 等价基目录（测试注入）；仅 win32 分支使用。 */
   appDataDir?: string;
+  /** 平台（测试注入，跨平台跑分支用）；默认 process.platform。 */
+  platform?: NodeJS.Platform;
 }
 
-/** 平台配置根（Rust dirs::config_dir 惯例，文档给出的默认路径为其常见值）。 */
-function devinAppDataDir(
+/** Windows 配置与数据共用的基目录（%APPDATA%，缺省回退 home 下标准路径）。 */
+function windowsAppDataDir(
   env: Record<string, string | undefined>,
   home: string,
+  appDataDir?: string,
 ): string {
-  if (process.platform === "win32") {
-    return env.APPDATA ?? path.join(home, "AppData", "Roaming");
-  }
-  if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support");
-  }
-  return env.XDG_CONFIG_HOME ? path.resolve(env.XDG_CONFIG_HOME) : path.join(home, ".config");
+  return appDataDir ?? env.APPDATA ?? path.join(home, "AppData", "Roaming");
 }
 
+/**
+ * 数据根（cli/sessions.db 的父目录的父目录）。Windows：config 根与数据根
+ * 同为 %APPDATA%\devin（实测布局），可被 DEVIN_CONFIG_HOME 覆盖（该变量
+ * 仅见于 devin.exe 字符表）；macOS/Linux：XDG 数据目录 + devin（官方
+ * troubleshooting 文档与 macOS 实测，非 ~/Library/Application Support）。
+ */
+function devinDataRoot({
+  env = process.env,
+  homeDir = homedir(),
+  appDataDir,
+  platform = process.platform,
+}: DevinPathOptions = {}): string {
+  if (platform === "win32") {
+    const override = env.DEVIN_CONFIG_HOME?.trim();
+    if (override) return path.resolve(override);
+    return path.join(windowsAppDataDir(env, homeDir, appDataDir), "devin");
+  }
+  const xdgData = env.XDG_DATA_HOME?.trim();
+  return path.join(
+    xdgData ? path.resolve(xdgData) : path.join(homeDir, ".local", "share"),
+    "devin",
+  );
+}
+
+/**
+ * 配置根（config.json 所在目录）。Windows：%APPDATA%\devin（可被
+ * DEVIN_CONFIG_HOME 覆盖）；macOS/Linux：XDG 配置目录 + devin（官方
+ * configuration 文档；CLI 二进制含 XDG_CONFIG_HOME，Desktop airgap 模式
+ * 即经它重定向，无 DEVIN_CONFIG_HOME）。
+ */
 export function devinConfigRoot({
   env = process.env,
   homeDir = homedir(),
   appDataDir,
+  platform = process.platform,
 }: DevinPathOptions = {}): string {
-  const override = env.DEVIN_CONFIG_HOME?.trim();
-  if (override) return path.resolve(override);
-  return path.join(appDataDir ?? devinAppDataDir(env, homeDir), "devin");
-}
-
-/**
- * 判断文件存储模式是否生效（此时 SQLite 库不再更新）。env DEVIN_SESSION_STORE
- * 优先于 config.json 的 session_store 键（二进制内 "=files =sqlite default
- * DEVIN_SESSION_STORE config.json session_store" 解析顺序），默认 sqlite；
- * config.json 缺失、损坏或字段类型不对时按 sqlite，不向外抛错。
- */
-async function devinFileStoreActive(
-  env: Record<string, string | undefined>,
-  configRoot: string,
-): Promise<boolean> {
-  if (env.DEVIN_SESSION_STORE?.trim() === "files") return true;
-  let content: string;
-  try {
-    content = await readFile(path.join(configRoot, "config.json"), "utf8");
-  } catch {
-    return false;
+  if (platform === "win32") {
+    const override = env.DEVIN_CONFIG_HOME?.trim();
+    if (override) return path.resolve(override);
+    return path.join(windowsAppDataDir(env, homeDir, appDataDir), "devin");
   }
-  try {
-    const parsed: unknown = JSON.parse(content);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return false;
-    }
-    return (parsed as { session_store?: unknown }).session_store === "files";
-  } catch {
-    return false;
-  }
+  const xdgConfig = env.XDG_CONFIG_HOME?.trim();
+  return path.join(
+    xdgConfig ? path.resolve(xdgConfig) : path.join(homeDir, ".config"),
+    "devin",
+  );
 }
 
 export function resolveDevinDatabasePath(options: DevinPathOptions = {}): string {
   const env = options.env ?? process.env;
 
-  // 面板专用 DATA_DIR 只替换配置根，不与官方变量混用（对齐 ZCODE_DATA_DIR）。
+  // 面板专用 DATA_DIR 只替换数据根，不与官方变量混用（对齐 ZCODE_DATA_DIR）。
   const dataDir = env.DEVIN_DATA_DIR?.trim();
   if (dataDir) {
     return path.join(path.resolve(dataDir), "cli", "sessions.db");
@@ -101,7 +126,43 @@ export function resolveDevinDatabasePath(options: DevinPathOptions = {}): string
     return path.join(path.resolve(sessionsDir), "sessions.db");
   }
 
-  return path.join(devinConfigRoot(options), "cli", "sessions.db");
+  return path.join(devinDataRoot(options), "cli", "sessions.db");
+}
+
+/**
+ * 判断文件存储模式是否生效（此时 SQLite 库不再更新）。env DEVIN_SESSION_STORE
+ * 优先于 config.json 的 session_store 键（设置面板文案："session history store
+ * (sqlite/files); DEVIN_SESSION_STORE overrides"；二进制字符串表：
+ * "config.json session_store" / "ignoring =: expected `files` or `sqlite`"），
+ * 非法值忽略后回落 config.json；config.json 缺失、损坏或字段类型不对时按
+ * sqlite，不向外抛错。configRoots 依优先级排列，首个能解析出有效 JSON 的生效。
+ */
+async function devinFileStoreActive(
+  env: Record<string, string | undefined>,
+  configRoots: string[],
+): Promise<boolean> {
+  const override = env.DEVIN_SESSION_STORE?.trim();
+  if (override === "files") return true;
+  if (override === "sqlite") return false;
+
+  for (const configRoot of configRoots) {
+    let content: string;
+    try {
+      content = await readFile(path.join(configRoot, "config.json"), "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        continue;
+      }
+      return (parsed as { session_store?: unknown }).session_store === "files";
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 export async function readDevinUsage(
@@ -109,11 +170,13 @@ export async function readDevinUsage(
 ): Promise<HarnessUsage> {
   const env = options.env ?? process.env;
   const source = resolveDevinDatabasePath(options);
-  // session_store 配置始终读配置根下的 config.json；面板专用 DEVIN_DATA_DIR
-  // 替换配置根时也随之替换（库与配置同根）。
-  const configRoot = env.DEVIN_DATA_DIR?.trim()
-    ? path.resolve(env.DEVIN_DATA_DIR.trim())
-    : devinConfigRoot(options);
+  // session_store 配置读配置根下的 config.json；面板专用 DEVIN_DATA_DIR
+  // 替换数据根时其下的 config.json 优先（库与配置一并沙箱化），能解析出
+  // 有效 JSON 即止，否则回退平台配置根。
+  const dataDir = env.DEVIN_DATA_DIR?.trim();
+  const configRoots = dataDir
+    ? [path.resolve(dataDir), devinConfigRoot(options)]
+    : [devinConfigRoot(options)];
 
   const unavailable = (skippedFiles = 0): HarnessUsage => ({
     harness: "devin",
@@ -125,7 +188,7 @@ export async function readDevinUsage(
   });
 
   // 文件存储模式下 SQLite 库只剩陈旧数据，不作为可用来源。
-  if (await devinFileStoreActive(env, configRoot)) {
+  if (await devinFileStoreActive(env, configRoots)) {
     return unavailable();
   }
 
