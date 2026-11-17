@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { UsageRecord, UsageResponse } from "@/lib/usage";
 import { getUsageStore } from "@/lib/usage-store";
 import { GET as queryUsageView } from "@/app/api/usage/query/route";
+import { GET as queryUsageStats } from "@/app/api/usage/stats/route";
 import { GET as queryUsageRecords } from "@/app/api/usage/records/route";
 import { GET as queryRecordDetail } from "@/app/api/usage/records/detail/route";
 import { GET as exportUsageRecords } from "@/app/api/usage/export/route";
@@ -175,6 +176,39 @@ describe("M6 查询 API", () => {
       new Request("http://localhost/api/usage/records/detail?harness=nope&recordId=x"),
     );
     expect(invalid.status).toBe(400);
+  });
+
+  it("统计接口返回日/月与日×模型聚合，并带 revision 头", async () => {
+    const response = await queryUsageStats(
+      new Request("http://localhost/api/usage/stats?range=all"),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("X-Usage-Revision")).toBe("1");
+    const stats = (await response.json()) as {
+      snapshotAvailable: boolean;
+      daily: Array<{ key: string; requests: number; tokens: number }>;
+      monthly: Array<{ key: string; requests: number }>;
+      dailyModels: Array<{ day: string; model: string; requests: number }>;
+      dailyModelsTruncated: boolean;
+      monthlyModels: Array<{ month: string; model: string; requests: number }>;
+    };
+    expect(stats.snapshotAvailable).toBe(true);
+    // 首轮用例提交了 3 条记录；跨桶合计恒等于 3，不受日期/月界影响。
+    expect(stats.daily.reduce((sum, bucket) => sum + bucket.requests, 0)).toBe(3);
+    expect(stats.monthly.reduce((sum, bucket) => sum + bucket.requests, 0)).toBe(3);
+    expect(stats.dailyModels.reduce((sum, row) => sum + row.requests, 0)).toBe(3);
+    expect(stats.dailyModelsTruncated).toBe(false);
+    expect(stats.monthlyModels.reduce((sum, row) => sum + row.requests, 0)).toBe(3);
+    for (const row of stats.monthlyModels) expect(row.month).toMatch(/^\d{4}-\d{2}$/);
+    for (const bucket of stats.daily) expect(bucket.key).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    for (const bucket of stats.monthly) expect(bucket.key).toMatch(/^\d{4}-\d{2}$/);
+
+    const invalid = await queryUsageStats(
+      new Request("http://localhost/api/usage/stats?range=nope"),
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "range 参数非法" });
   });
 
   it("CSV 导出与筛选共用参数并返回附件响应头", async () => {

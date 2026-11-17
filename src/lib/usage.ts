@@ -187,6 +187,65 @@ export interface UsageRecordsPage {
   records: UsageRecord[];
 }
 
+/** 统计页按时间桶（日/月）的聚合行；不含首字与速度（分桶中位数成本高）。 */
+export interface UsageBucketStat {
+  /** 桶键：daily 为 "YYYY-MM-DD"，monthly 为 "YYYY-MM"（本地时区）。 */
+  key: string;
+  requests: number;
+  credits: number;
+  hasCredit: boolean;
+  /** 按 Harness 分列的计费 Credits，不同 Harness 的 Credits 单位不同。 */
+  creditsByHarness: CreditBreakdownItem[];
+  mixedCreditUnits: boolean;
+  /** 服务端报告了 Credits 但标记为不计费的部分。 */
+  unbilledCredits: number;
+  tokens: number;
+  hasTokens: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheableInputTokens: number;
+  cacheRate: number;
+  successRate: number;
+}
+
+/** 统计页 日×模型 明细行；按 model 透视展示。 */
+export interface UsageDayModelStat {
+  day: string;
+  model: string;
+  provider: string;
+  requests: number;
+  tokens: number;
+  hasTokens: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  credits: number;
+  hasCredit: boolean;
+}
+
+/** 统计页 月×模型 明细行；不截断，覆盖全部有记录的月份。 */
+export interface UsageMonthModelStat extends Omit<UsageDayModelStat, "day"> {
+  /** 桶键 "YYYY-MM"（本地时区）。 */
+  month: string;
+}
+
+/** 统计面板聚合视图（/api/usage/stats）；与 /api/usage/query 共用筛选口径。 */
+export interface UsageStatsView {
+  revision: number;
+  snapshotAvailable: boolean;
+  /** 按日聚合（本地时区），日期降序，只含有记录的日期。 */
+  daily: UsageBucketStat[];
+  /** 按月聚合，月份降序，只含有记录的月份。 */
+  monthly: UsageBucketStat[];
+  /** 按 日×模型 聚合（日降序、Tokens 降序）；天数受 STATS_DAILY_MODEL_MAX_DAYS 限制。 */
+  dailyModels: UsageDayModelStat[];
+  /** dailyModels 因天数上限被截断（保留最近日期，单日不会被切断）。 */
+  dailyModelsTruncated: boolean;
+  /** 按 月×模型 聚合（月降序、Tokens 降序），不截断。 */
+  monthlyModels: UsageMonthModelStat[];
+}
+
 export interface UsageSummary {
   requests: number;
   /** 计费 Credits 合计；mixedCreditUnits 为 true 时跨 Harness 相加，没有意义，不应展示。 */

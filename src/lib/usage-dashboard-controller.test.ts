@@ -3,6 +3,7 @@ import {
   DEFAULT_USAGE_FILTERS,
   type UsageQueryFilters,
   type UsageRecordsPage,
+  type UsageStatsView,
   type UsageSyncResult,
   type UsageView,
   type UsageSyncStatus,
@@ -154,6 +155,18 @@ function recordsPayload(page: number, total = 30, pageSize = 10): UsageRecordsPa
     page,
     pageSize,
     records: [],
+  };
+}
+
+function statsPayload(revision: number): UsageStatsView {
+  return {
+    revision,
+    snapshotAvailable: true,
+    daily: [],
+    monthly: [],
+    dailyModels: [],
+    dailyModelsTruncated: false,
+    monthlyModels: [],
   };
 }
 
@@ -496,6 +509,64 @@ describe("UsageDashboardController", () => {
     await flushPromises();
     expect(fetchView.mock.calls.length).toBe(appliedCalls + 2);
     expect(controller.getState().view.data?.revision).toBe(2);
+    controller.stop();
+  });
+
+  it("统计段仅在启用后拉取，并随筛选与 revision 变化重查", async () => {
+    const env = createEnvironment();
+    let revision = 1;
+    const fetchView = vi.fn(async () => viewPayload(revision));
+    const fetchRecords = vi.fn(async () => recordsPayload(0));
+    const fetchStats = vi.fn(async () => statsPayload(revision));
+    const syncUsage = vi.fn(async () => syncPayload(revision));
+    const controller = new UsageDashboardController({
+      fetchView,
+      fetchRecords,
+      fetchStats,
+      syncUsage,
+      environment: env.environment,
+    });
+
+    controller.start();
+    await flushPromises();
+    // 未启用：不发统计请求，但 state 提供空段。
+    expect(fetchStats).not.toHaveBeenCalled();
+    expect(controller.getState().stats).toMatchObject({
+      data: null,
+      loading: false,
+      updating: false,
+      error: null,
+    });
+
+    controller.setStatsEnabled(true);
+    await flushPromises();
+    expect(fetchStats).toHaveBeenCalledTimes(1);
+    expect(fetchStats).toHaveBeenCalledWith(DEFAULT_USAGE_FILTERS);
+    expect(controller.getState().stats).toMatchObject({
+      data: { revision: 1 },
+      loading: false,
+      updating: false,
+      error: null,
+    });
+
+    // 筛选变化：随视图与日志一起重查。
+    controller.setFilters(SEVEN_DAYS);
+    await flushPromises();
+    expect(fetchStats).toHaveBeenCalledTimes(2);
+    expect(fetchStats).toHaveBeenLastCalledWith(SEVEN_DAYS);
+
+    // 同步推进 revision：统计段一起追平。
+    revision = 2;
+    await controller.refresh();
+    await flushPromises();
+    expect(fetchStats).toHaveBeenCalledTimes(3);
+    expect(controller.getState().stats.data?.revision).toBe(2);
+
+    // 停用后筛选变化不再拉取统计段；视图/日志照常。
+    controller.setStatsEnabled(false);
+    controller.setFilters(DEFAULT_USAGE_FILTERS);
+    await flushPromises();
+    expect(fetchStats).toHaveBeenCalledTimes(3);
     controller.stop();
   });
 });
