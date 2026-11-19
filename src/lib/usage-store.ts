@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   buildRecordsPage,
+  buildStatsView,
   buildUsageView,
   findAllUsageRecords,
   findUsageRecord,
@@ -20,6 +21,7 @@ import {
   type UsageResponse,
   type UsageSnapshotResponse,
   type UsageSource,
+  type UsageStatsView,
   type UsageSyncPhase,
   type UsageSyncStatus,
   type UsageView,
@@ -809,6 +811,13 @@ export class UsageStore {
         sources,
       });
     });
+  }
+
+  /** 统计面板聚合：按日/月桶与日×模型分桶（与视图查询同一份筛选）。 */
+  queryStats(filters: UsageQueryFilters, now = new Date()): UsageStatsView {
+    return this.readTransaction(() =>
+      buildStatsView(this.db, filters, now, this.getStatus()),
+    );
   }
 
   /** 请求日志分页；页大小由调用方（路由）钳制。 */

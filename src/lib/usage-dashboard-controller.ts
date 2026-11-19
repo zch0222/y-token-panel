@@ -6,6 +6,7 @@ import {
   DEFAULT_USAGE_FILTERS,
   type UsageQueryFilters,
   type UsageRecordsPage,
+  type UsageStatsView,
   type UsageSyncResult,
   type UsageView,
 } from "@/lib/usage";
@@ -22,6 +23,8 @@ export interface UsageQuerySection<T> {
 export interface UsageDashboardState {
   view: UsageQuerySection<UsageView>;
   records: UsageQuerySection<UsageRecordsPage>;
+  /** 统计面板聚合（/api/usage/stats）；仅在统计视图启用后拉取。 */
+  stats: UsageQuerySection<UsageStatsView>;
   /** 手动同步进行中。 */
   syncing: boolean;
   /** 自动 / 回前台触发的后台同步进行中。 */
@@ -39,6 +42,8 @@ export interface UsageDashboardDeps {
   fetchView: (filters: UsageQueryFilters) => Promise<UsageView>;
   /** 请求日志分页查询（/api/usage/records）。 */
   fetchRecords: (filters: UsageQueryFilters, page: number, pageSize: number) => Promise<UsageRecordsPage>;
+  /** 统计面板聚合查询（/api/usage/stats）；缺省时统计段保持空。 */
+  fetchStats?: (filters: UsageQueryFilters) => Promise<UsageStatsView>;
   /** 触发一次本地同步；返回小结果（revision 等），不携带全部记录。 */
   syncUsage: () => Promise<UsageSyncResult>;
   pageSize?: number;
@@ -90,6 +95,7 @@ export class UsageDashboardController {
   private state: UsageDashboardState = {
     view: { data: null, loading: true, updating: false, error: null },
     records: { data: null, loading: true, updating: false, error: null },
+    stats: { data: null, loading: false, updating: false, error: null },
     syncing: false,
     refreshing: false,
     lastSyncedAt: null,
@@ -101,6 +107,9 @@ export class UsageDashboardController {
   private page = 0;
   private viewGeneration = 0;
   private recordsGeneration = 0;
+  private statsGeneration = 0;
+  /** 统计视图可见时才拉取 stats 段（setStatsEnabled）。 */
+  private statsEnabled = false;
   /** 已见过的最高 revision；视图与同步结果共同推进。 */
   private seenRevision: number | null = null;
   private lastSyncData: UsageSyncResult | null = null;
@@ -144,6 +153,7 @@ export class UsageDashboardController {
     void this.syncLoop.start();
     this.fetchView();
     this.fetchRecords();
+    this.fetchStats();
   };
 
   stop = (): void => {
@@ -170,6 +180,14 @@ export class UsageDashboardController {
     this.page = 0;
     this.fetchView();
     this.fetchRecords();
+    this.fetchStats();
+  };
+
+  /** 统计视图开关；启用时立即拉取（数据保留，切走后后台重查停止）。 */
+  setStatsEnabled = (enabled: boolean): void => {
+    if (enabled === this.statsEnabled) return;
+    this.statsEnabled = enabled;
+    if (enabled && this.active) this.fetchStats();
   };
 
   setPage = (page: number): void => {
@@ -191,6 +209,7 @@ export class UsageDashboardController {
   private refetchQueries(): void {
     this.fetchView();
     this.fetchRecords();
+    this.fetchStats();
   }
 
   private fetchView(): void {
@@ -223,6 +242,47 @@ export class UsageDashboardController {
         this.patchState({
           view: {
             data: this.state.view.data,
+            loading: false,
+            updating: false,
+            error: queryError(error),
+          },
+        });
+      },
+    );
+  }
+
+  /** 统计段拉取；仅在启用且提供 fetchStats 依赖时发请求，revision 落后于视图时追平。 */
+  private fetchStats(): void {
+    const fetchStats = this.deps.fetchStats;
+    if (fetchStats === undefined || !this.statsEnabled) return;
+    const generation = ++this.statsGeneration;
+    const filters = this.filters;
+    const hasData = this.state.stats.data !== null;
+    this.patchState({
+      stats: {
+        data: this.state.stats.data,
+        loading: !hasData,
+        updating: hasData,
+        error: null,
+      },
+    });
+
+    void fetchStats(filters).then(
+      (stats) => {
+        if (generation !== this.statsGeneration) return;
+        // 与视图同款追平：统计可能落后于同步结果见过的 revision。
+        const stale = this.seenRevision !== null && stats.revision < this.seenRevision;
+        if (!stale) this.seenRevision = stats.revision;
+        this.patchState({
+          stats: { data: stats, loading: false, updating: false, error: null },
+        });
+        if (stale) this.fetchStats();
+      },
+      (error) => {
+        if (generation !== this.statsGeneration) return;
+        this.patchState({
+          stats: {
+            data: this.state.stats.data,
             loading: false,
             updating: false,
             error: queryError(error),
@@ -289,7 +349,9 @@ export class UsageDashboardController {
     this.patchState({ lastSyncedAt: result.syncedAt });
 
     const hasQueryError =
-      this.state.view.error !== null || this.state.records.error !== null;
+      this.state.view.error !== null ||
+      this.state.records.error !== null ||
+      this.state.stats.error !== null;
     if (this.seenRevision === null) {
       // 首轮同步可能先于视图返回：只登记 revision，由在途视图带出数据，
       // 避免启动阶段重复查询；若视图查询已失败，借这次同步立即重试。

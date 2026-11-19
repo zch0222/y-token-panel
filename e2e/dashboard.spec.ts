@@ -160,6 +160,97 @@ test("移动端可进入所有主视图，标签与导出不会挤出屏幕", as
   expect(exportBounds!.x + exportBounds!.width).toBeLessThanOrEqual(390);
 });
 
+test("统计面板按日历选日/月并以图表展示用量与模型排名", async ({ page }) => {
+  const requests = await mockUsageApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "统计面板", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "统计面板" })).toBeVisible();
+  // 统计页用内置日历导航时间，统计接口始终拉全量数据。
+  await expect
+    .poll(() =>
+      requests.some(
+        (url) =>
+          url.pathname === "/api/usage/stats" && url.searchParams.get("range") === "all",
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByLabel("时间范围")).toHaveCount(0);
+
+  // 默认按日模式：日历定位到最新数据月 2026-11，详情为最新日 11-10。
+  await expect(page.getByRole("heading", { name: "2026年11月", exact: true })).toBeVisible();
+  const dayDetail = page
+    .getByRole("heading", { name: /2026-11-10/ })
+    .locator("xpath=ancestor::section[1]");
+  await expect(dayDetail).toContainText("25");
+  await expect(dayDetail).toContainText("43.6K");
+
+  // 当日模型条形图：默认按 Tokens，claude 第一；切到请求数后 kimi 第一。
+  const modelTicks = () =>
+    dayDetail.locator(".recharts-cartesian-axis-tick-value").allTextContents();
+  await expect
+    .poll(async () => (await modelTicks()).find((text) => text.includes("claude")))
+    .toBeTruthy();
+  expect((await modelTicks())[0]).toContain("claude-sonnet-e2e");
+  await page.getByRole("button", { name: "请求数", exact: true }).click();
+  expect((await modelTicks())[0]).toContain("kimi-k3.1-pro");
+  await page.getByRole("button", { name: "Tokens", exact: true }).click();
+
+  // 点击日历中另一天，详情切到 11-09（当日只有 kimi 一个模型）。
+  await page.getByRole("button", { name: "选择 2026-11-09" }).click();
+  const day9 = page
+    .getByRole("heading", { name: /2026-11-09/ })
+    .locator("xpath=ancestor::section[1]");
+  await expect(day9).toContainText("10");
+  await expect(day9).toContainText("5K");
+  const ticks9 = await day9.locator(".recharts-cartesian-axis-tick-value").allTextContents();
+  expect(ticks9).toHaveLength(1);
+  expect(ticks9[0]).toContain("kimi-k3.1-pro");
+
+  // 按月模式：年历选择 2026-10，展示当月每日柱状图与当月模型排名。
+  await page.getByRole("button", { name: "按月", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "2026年", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "选择 2026-10" }).click();
+  const monthDetail = page
+    .getByRole("heading", { name: "2026年10月", exact: true })
+    .locator("xpath=ancestor::section[1]");
+  await expect(monthDetail).toContainText("5");
+  await expect(monthDetail).toContainText("6K");
+  // 当月只有 10-20 一天有数据 → 每日图仅一根非零高度柱子。
+  const visibleBars = monthDetail.locator(".recharts-bar-rectangle:visible");
+  await expect(visibleBars).toHaveCount(1);
+
+  // 点击柱子跳回按日模式并选中当天。
+  await visibleBars.first().click();
+  await expect(
+    page.getByRole("heading", { name: /2026-10-20/ }),
+  ).toBeVisible();
+
+  // 总览模式：全历史月度柱状图 + 模型排名（Tokens 口径 claude 第一）。
+  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "月度用量", exact: true })).toBeVisible();
+  const ranking = page
+    .getByRole("heading", { name: "模型用量排名", exact: true })
+    .locator("xpath=ancestor::section[1]");
+  await expect(ranking).toContainText("claude-sonnet-e2e");
+  const rankingTicks = await ranking
+    .locator(".recharts-cartesian-axis-tick-value")
+    .allTextContents();
+  expect(rankingTicks[0]).toContain("claude-sonnet-e2e");
+
+  // 统计接口失败时明确报错，且已加载的数据保留不被清空（LIFO 注册优先于 catch-all；
+  // glob 尾部无通配符匹配不到 query string，用正则放行 ?range=...）。
+  await page.route(/\/api\/usage\/stats/, (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"x"}' }),
+  );
+  await page.getByLabel("计费状态筛选").click();
+  await page.getByRole("option", { name: "计费", exact: true }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "读取用量统计失败" }),
+  ).toBeVisible();
+  await expect(ranking).toContainText("claude-sonnet-e2e");
+});
+
 test("日志查询失败明确报错，重试成功后恢复真实记录", async ({ page }) => {
   let failRecords = true;
   await mockUsageApi(page, { failRecords: () => failRecords });

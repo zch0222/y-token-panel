@@ -2,6 +2,7 @@
 
 import {
   ChartColumn,
+  ChartPie,
   Database,
   FolderKanban,
   LayoutDashboard,
@@ -30,6 +31,7 @@ import {
 
 export type DashboardView =
   | "overview"
+  | "stats"
   | "logs"
   | "models"
   | "projects"
@@ -47,6 +49,7 @@ interface SidebarProps {
 
 const navigation = [
   { id: "overview" as const, label: "用量概览", icon: LayoutDashboard },
+  { id: "stats" as const, label: "统计面板", icon: ChartPie },
   { id: "logs" as const, label: "请求日志", icon: ListChecks },
   { id: "models" as const, label: "模型分析", icon: Boxes },
   { id: "harnesses" as const, label: "Harness 对比", icon: Blocks },

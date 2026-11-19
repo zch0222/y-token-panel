@@ -76,8 +76,8 @@ interface UsageTablesProps {
   updating: boolean;
 }
 
-const headClass = "h-11 border-border/70 px-4 text-xs font-normal text-muted-foreground";
-const cellClass = "border-border/70 px-4 py-3.5 text-[13px] tabular-nums";
+export const headClass = "h-11 border-border/70 px-4 text-xs font-normal text-muted-foreground";
+export const cellClass = "border-border/70 px-4 py-3.5 text-[13px] tabular-nums";
 const RECORDS_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 const providerColors: Record<string, string> = {
@@ -97,7 +97,7 @@ const providerColors: Record<string, string> = {
   "bigmodel-api": "bg-emerald-500/15 text-emerald-400",
 };
 
-function ProviderMark({ name, small = false }: { name: string; small?: boolean }) {
+export function ProviderMark({ name, small = false }: { name: string; small?: boolean }) {
   return (
     <span
       className={cn(
@@ -112,7 +112,7 @@ function ProviderMark({ name, small = false }: { name: string; small?: boolean }
   );
 }
 
-function EmptyRow({
+export function EmptyRow({
   colSpan,
   title = "当前筛选范围暂无用量",
   description = "切换时间范围或清除筛选后再看看",

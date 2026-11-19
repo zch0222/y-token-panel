@@ -36,6 +36,7 @@ import { CustomRangePicker } from "@/components/dashboard/custom-range-picker";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
 import { MobileNavigation, Sidebar, type DashboardView } from "@/components/dashboard/sidebar";
 import { InstallAppButton } from "@/components/pwa/install-app-button";
+import { StatsView } from "@/components/dashboard/stats-view";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
 import { cn } from "@/lib/utils";
@@ -60,6 +61,7 @@ import {
   type RangeKey,
   type UsageQueryFilters,
   type UsageRecordsPage,
+  type UsageStatsView,
   type UsageSummary,
   type UsageSyncResult,
   type UsageView,
@@ -209,6 +211,7 @@ function getChartNotice(
 
 const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
   overview: { title: "用量统计", subtitle: "集中追踪 AI Harness 的 Token、Credits 与请求" },
+  stats: { title: "统计面板", subtitle: "在日历中选择日 / 月，用图表查看用量与模型排名" },
   logs: { title: "请求日志", subtitle: "查看每一次模型调用的本地用量明细" },
   models: { title: "模型分析", subtitle: "比较不同模型的使用量与缓存效率" },
   projects: { title: "项目统计", subtitle: "了解各项目在不同 Harness 中的使用情况" },
@@ -252,6 +255,16 @@ async function fetchUsageRecordsPage(
   return (await response.json()) as UsageRecordsPage;
 }
 
+// 统计面板用内置日历做时间导航，始终拉全量数据，与上方时间范围筛选解耦。
+async function fetchUsageStats(filters: UsageQueryFilters): Promise<UsageStatsView> {
+  const response = await fetch(
+    `/api/usage/stats?${usageQuerySearch({ ...filters, range: "all" })}`,
+    { cache: "no-store" },
+  );
+  if (!response.ok) throw new Error("读取用量统计失败");
+  return (await response.json()) as UsageStatsView;
+}
+
 async function syncUsageResult(): Promise<UsageSyncResult> {
   const response = await fetch("/api/usage/sync", {
     method: "POST",
@@ -272,12 +285,20 @@ export function UsageDashboard() {
       new UsageDashboardController({
         fetchView: fetchUsageView,
         fetchRecords: fetchUsageRecordsPage,
+        fetchStats: fetchUsageStats,
         syncUsage: syncUsageResult,
       }),
   );
   const [dashboardState, setDashboardState] = useState(controller.getState);
-  const { view: viewSection, records: recordsSection, syncing, refreshing, lastSyncedAt, syncError } =
-    dashboardState;
+  const {
+    view: viewSection,
+    records: recordsSection,
+    stats: statsSection,
+    syncing,
+    refreshing,
+    lastSyncedAt,
+    syncError,
+  } = dashboardState;
   const view = viewSection.data;
   const [range, setRange] = useState<RangeKey>("today");
   const [customRange, setCustomRange] = useState<{ start: number; end: number } | null>(null);
@@ -332,6 +353,11 @@ export function UsageDashboard() {
     controller.setFilters(filters);
   }, [controller, filters]);
 
+  // 统计面板可见时才拉取 /api/usage/stats；离开后停止后台重查。
+  useEffect(() => {
+    controller.setStatsEnabled(viewName === "stats");
+  }, [controller, viewName]);
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.style.colorScheme = theme;
@@ -352,7 +378,7 @@ export function UsageDashboard() {
   const providers = view?.facets.providers ?? [];
   const models = view?.facets.models ?? [];
   const filteredCount = view?.filteredCount ?? 0;
-  const updating = viewSection.updating || recordsSection.updating;
+  const updating = viewSection.updating || recordsSection.updating || statsSection.updating;
   const hasData = view !== null;
 
   const changeHarness = (next: HarnessFilter) => {
@@ -488,43 +514,47 @@ export function UsageDashboard() {
           />
 
           <div className="mb-5 flex flex-wrap items-center gap-2">
-            <Select
-              value={range}
-              onValueChange={(value) => {
-                if (value === "custom") {
-                  // 首次进入自定义时给默认窗口（今天 00 时 ～ 23 时），之后沿用上次应用值。
-                  setRange("custom");
-                  setCustomRange((previous) => previous ?? defaultCustomRange());
-                  return;
-                }
-                setRange((value as RangeKey | null) ?? "today");
-              }}
-            >
-              <SelectTrigger
-                className="h-9 min-w-[118px] max-w-[248px] border-border bg-card text-xs"
-                aria-label="时间范围"
-              >
-                <CalendarDays className="mr-1 size-3.5 shrink-0 text-muted-foreground" />
-                <SelectValue>
-                  {range === "custom" && customRange
-                    ? `自定义 · ${formatCustomRangeLabel(customRange.start, customRange.end)}`
-                    : RANGE_OPTIONS.find((option) => option.value === range)?.label}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {RANGE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {viewName !== "stats" && (
+              <>
+                <Select
+                  value={range}
+                  onValueChange={(value) => {
+                    if (value === "custom") {
+                      // 首次进入自定义时给默认窗口（今天 00 时 ～ 23 时），之后沿用上次应用值。
+                      setRange("custom");
+                      setCustomRange((previous) => previous ?? defaultCustomRange());
+                      return;
+                    }
+                    setRange((value as RangeKey | null) ?? "today");
+                  }}
+                >
+                  <SelectTrigger
+                    className="h-9 min-w-[118px] max-w-[248px] border-border bg-card text-xs"
+                    aria-label="时间范围"
+                  >
+                    <CalendarDays className="mr-1 size-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue>
+                      {range === "custom" && customRange
+                        ? `自定义 · ${formatCustomRangeLabel(customRange.start, customRange.end)}`
+                        : RANGE_OPTIONS.find((option) => option.value === range)?.label}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RANGE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-            {range === "custom" && (
-              <CustomRangePicker value={customRange} onApply={setCustomRange} />
+                {range === "custom" && (
+                  <CustomRangePicker value={customRange} onApply={setCustomRange} />
+                )}
+
+                <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
+              </>
             )}
-
-            <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
 
             <Select value={project} onValueChange={(value) => setProject(value ?? "all")}>
               <SelectTrigger className="h-9 min-w-[130px] max-w-[190px] border-border bg-card text-xs" aria-label="项目筛选">
@@ -639,6 +669,16 @@ export function UsageDashboard() {
             </div>
           )}
 
+          {statsSection.error && (
+            <div role="alert" className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <CircleAlert className="size-4 shrink-0" />
+              <span className="flex-1">{statsSection.error}，统计面板可能不是最新数据。</span>
+              <Button type="button" variant="ghost" size="sm" onClick={refreshUsage}>
+                重试
+              </Button>
+            </div>
+          )}
+
           {hasData && activeSources.some((source) => !source.sourceAvailable) && (
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-xs leading-5 text-amber-500">
               未找到 {activeSources.filter((source) => !source.sourceAvailable).map((source) => getHarnessLabel(source.harness)).join("、")} 的数据目录；其他 Harness 的统计不受影响。
@@ -738,7 +778,25 @@ export function UsageDashboard() {
             </section>
           )}
 
-          {loading ? (
+          {viewName === "stats" ? (
+            !hasData || !view.snapshotAvailable ? (
+              <div className="panel px-5 py-10 text-center text-sm text-muted-foreground">
+                {view && !view.snapshotAvailable && view.sync.phase === "importing"
+                  ? "首次导入正在进行，完成后会自动展示真实用量。"
+                  : "暂无已提交的用量快照。可点击“同步数据”重试，旧快照（如存在）不会因同步失败被清空。"}
+              </div>
+            ) : statsSection.loading && statsSection.data === null ? (
+              <div className="panel p-5">
+                <Skeleton className="h-8 w-72" />
+                <Skeleton className="mt-6 h-10 w-full" />
+                {Array.from({ length: 5 }, (_, index) => (
+                  <Skeleton key={index} className="mt-3 h-12 w-full" />
+                ))}
+              </div>
+            ) : (
+              <StatsView stats={statsSection.data} />
+            )
+          ) : loading ? (
             <div className="panel p-5">
               <Skeleton className="h-8 w-72" />
               <Skeleton className="mt-6 h-10 w-full" />

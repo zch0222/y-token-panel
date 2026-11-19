@@ -47,6 +47,12 @@ const summary = {
 
 const group = (key: string) => ({ ...summary, key, lastUsed: records[0].timestamp });
 
+/** 排名断言需要 Tokens 与请求数排序不一致：kimi 请求多、claude Tokens 多。 */
+const modelGroups = [
+  { ...summary, key: "kimi-k3.1-pro", requests: 13, tokens: 20_150, lastUsed: records[0].timestamp },
+  { ...summary, key: "claude-sonnet-e2e", requests: 12, tokens: 38_750, lastUsed: records[0].timestamp },
+];
+
 export const usageView = {
   revision: 1,
   snapshotAvailable: true,
@@ -114,7 +120,7 @@ export const usageView = {
   groups: {
     harness: [group("dsh"), group("claude")],
     provider: [group("DeepSeek"), group("Anthropic")],
-    model: [group("kimi-k3.1-pro"), group("claude-sonnet-e2e")],
+    model: modelGroups,
     project: [group("Alpha"), group("Beta")],
   },
   facets: {
@@ -123,6 +129,200 @@ export const usageView = {
     models: ["kimi-k3.1-pro", "claude-sonnet-e2e"],
   },
   filteredCount: 25,
+};
+
+/**
+ * /api/usage/stats 的统计面板负载：3 天 + 2 月 + 日×模型 + 月×模型。
+ * 排序区分度刻意设计：claude Tokens 更高（25,000 / 31,000），kimi 请求数更多（13 / 23）。
+ */
+export const usageStats = {
+  revision: 1,
+  snapshotAvailable: true,
+  daily: [
+    {
+      key: "2026-11-10",
+      requests: 25,
+      credits: 6.25,
+      hasCredit: true,
+      creditsByHarness: [{ harness: "dsh", label: "DeepSeek Harness", credits: 6.25 }],
+      mixedCreditUnits: false,
+      unbilledCredits: 0,
+      tokens: 43_600,
+      hasTokens: true,
+      inputTokens: 27_000,
+      outputTokens: 8_600,
+      cacheReadTokens: 5_400,
+      cacheableInputTokens: 32_000,
+      cacheRate: 5_400 / 32_000,
+      successRate: 1,
+    },
+    {
+      key: "2026-11-09",
+      requests: 10,
+      credits: 1.5,
+      hasCredit: true,
+      creditsByHarness: [{ harness: "dsh", label: "DeepSeek Harness", credits: 1.5 }],
+      mixedCreditUnits: false,
+      unbilledCredits: 0,
+      tokens: 5_000,
+      hasTokens: true,
+      inputTokens: 3_400,
+      outputTokens: 1_000,
+      cacheReadTokens: 600,
+      cacheableInputTokens: 4_000,
+      cacheRate: 600 / 4_000,
+      successRate: 1,
+    },
+    {
+      key: "2026-10-20",
+      requests: 5,
+      credits: 1,
+      hasCredit: true,
+      creditsByHarness: [{ harness: "dsh", label: "DeepSeek Harness", credits: 1 }],
+      mixedCreditUnits: false,
+      unbilledCredits: 0,
+      tokens: 6_000,
+      hasTokens: true,
+      inputTokens: 4_000,
+      outputTokens: 1_200,
+      cacheReadTokens: 800,
+      cacheableInputTokens: 5_000,
+      cacheRate: 800 / 5_000,
+      successRate: 1,
+    },
+  ],
+  monthly: [
+    {
+      key: "2026-11",
+      requests: 35,
+      credits: 7.75,
+      hasCredit: true,
+      creditsByHarness: [{ harness: "dsh", label: "DeepSeek Harness", credits: 7.75 }],
+      mixedCreditUnits: false,
+      unbilledCredits: 0,
+      tokens: 48_600,
+      hasTokens: true,
+      inputTokens: 30_400,
+      outputTokens: 9_600,
+      cacheReadTokens: 6_000,
+      cacheableInputTokens: 36_000,
+      cacheRate: 6_000 / 36_000,
+      successRate: 1,
+    },
+    {
+      key: "2026-10",
+      requests: 5,
+      credits: 1,
+      hasCredit: true,
+      creditsByHarness: [{ harness: "dsh", label: "DeepSeek Harness", credits: 1 }],
+      mixedCreditUnits: false,
+      unbilledCredits: 0,
+      tokens: 6_000,
+      hasTokens: true,
+      inputTokens: 4_000,
+      outputTokens: 1_200,
+      cacheReadTokens: 800,
+      cacheableInputTokens: 5_000,
+      cacheRate: 800 / 5_000,
+      successRate: 1,
+    },
+  ],
+  dailyModels: [
+    {
+      day: "2026-11-10",
+      model: "kimi-k3.1-pro",
+      provider: "DeepSeek",
+      requests: 13,
+      tokens: 18_600,
+      hasTokens: true,
+      inputTokens: 12_000,
+      outputTokens: 3_600,
+      cacheReadTokens: 2_400,
+      credits: 3,
+      hasCredit: true,
+    },
+    {
+      day: "2026-11-10",
+      model: "claude-sonnet-e2e",
+      provider: "Anthropic",
+      requests: 12,
+      tokens: 25_000,
+      hasTokens: true,
+      inputTokens: 15_000,
+      outputTokens: 5_000,
+      cacheReadTokens: 3_000,
+      credits: 3.25,
+      hasCredit: true,
+    },
+    {
+      day: "2026-11-09",
+      model: "kimi-k3.1-pro",
+      provider: "DeepSeek",
+      requests: 10,
+      tokens: 5_000,
+      hasTokens: true,
+      inputTokens: 3_400,
+      outputTokens: 1_000,
+      cacheReadTokens: 600,
+      credits: 1.5,
+      hasCredit: true,
+    },
+    {
+      day: "2026-10-20",
+      model: "claude-sonnet-e2e",
+      provider: "Anthropic",
+      requests: 5,
+      tokens: 6_000,
+      hasTokens: true,
+      inputTokens: 4_000,
+      outputTokens: 1_200,
+      cacheReadTokens: 800,
+      credits: 1,
+      hasCredit: true,
+    },
+  ],
+  dailyModelsTruncated: false,
+  monthlyModels: [
+    {
+      month: "2026-11",
+      model: "kimi-k3.1-pro",
+      provider: "DeepSeek",
+      requests: 23,
+      tokens: 23_600,
+      hasTokens: true,
+      inputTokens: 15_400,
+      outputTokens: 4_600,
+      cacheReadTokens: 3_000,
+      credits: 4.5,
+      hasCredit: true,
+    },
+    {
+      month: "2026-11",
+      model: "claude-sonnet-e2e",
+      provider: "Anthropic",
+      requests: 12,
+      tokens: 25_000,
+      hasTokens: true,
+      inputTokens: 15_000,
+      outputTokens: 5_000,
+      cacheReadTokens: 3_000,
+      credits: 3.25,
+      hasCredit: true,
+    },
+    {
+      month: "2026-10",
+      model: "claude-sonnet-e2e",
+      provider: "Anthropic",
+      requests: 5,
+      tokens: 6_000,
+      hasTokens: true,
+      inputTokens: 4_000,
+      outputTokens: 1_200,
+      cacheReadTokens: 800,
+      credits: 1,
+      hasCredit: true,
+    },
+  ],
 };
 
 export interface UsageMockOptions {
@@ -150,6 +350,7 @@ export async function mockUsageApi(page: Page, options: UsageMockOptions = {}) {
       });
     }
     if (url.pathname === "/api/usage/query") return json(usageView);
+    if (url.pathname === "/api/usage/stats") return json(usageStats);
     if (url.pathname === "/api/usage/records") {
       options.onRecordsRequest?.(url);
       if (options.failRecords?.()) return json({ error: "读取请求日志失败" }, 500);

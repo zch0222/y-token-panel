@@ -9,6 +9,7 @@ import {
   summarizeRecords,
   type GroupDimension,
   type HarnessId,
+  type UsageBucketStat,
   type UsageQueryFilters,
   type UsageRecord,
   type UsageResponse,
@@ -593,5 +594,206 @@ describe("parseUsageQueryParams", () => {
       expect(ignored.value.filters.start).toBeUndefined();
       expect(ignored.value.filters.end).toBeUndefined();
     }
+  });
+});
+
+describe("UsageStore 统计面板聚合", () => {
+  const pad2 = (value: number) => String(value).padStart(2, "0");
+  const dayKeyOf = (timestamp: number): string => {
+    const date = new Date(timestamp);
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  };
+  const monthKeyOf = (timestamp: number): string => dayKeyOf(timestamp).slice(0, 7);
+
+  function bucketOf(records: UsageRecord[], keyOf: (timestamp: number) => string) {
+    const map = new Map<string, UsageRecord[]>();
+    for (const record of records) {
+      const key = keyOf(record.timestamp);
+      map.set(key, [...(map.get(key) ?? []), record]);
+    }
+    return map;
+  }
+
+  /** UsageBucketStat 与 summarizeRecords 逐字段对比（无首字/速度字段）。 */
+  function expectBucket(
+    actual: UsageBucketStat,
+    expected: ReturnType<typeof summarizeRecords>,
+  ): void {
+    expect(actual.requests).toBe(expected.requests);
+    expect(actual.tokens).toBe(expected.tokens);
+    expect(actual.inputTokens).toBe(expected.inputTokens);
+    expect(actual.outputTokens).toBe(expected.outputTokens);
+    expect(actual.cacheReadTokens).toBe(expected.cacheReadTokens);
+    expect(actual.cacheableInputTokens).toBe(expected.cacheableInputTokens);
+    expect(actual.hasTokens).toBe(expected.hasTokens);
+    expect(actual.hasCredit).toBe(expected.hasCredit);
+    expect(actual.mixedCreditUnits).toBe(expected.mixedCreditUnits);
+    expect(actual.unbilledCredits).toBeCloseTo(expected.unbilledCredits, 8);
+    expect(actual.credits).toBeCloseTo(expected.credits, 8);
+    expect(actual.cacheRate).toBeCloseTo(expected.cacheRate, 12);
+    expect(actual.successRate).toBeCloseTo(expected.successRate, 12);
+    expect(actual.creditsByHarness.map((item) => item.harness)).toEqual(
+      expected.creditsByHarness.map((item) => item.harness),
+    );
+    for (let index = 0; index < expected.creditsByHarness.length; index += 1) {
+      expect(actual.creditsByHarness[index].credits).toBeCloseTo(
+        expected.creditsByHarness[index].credits,
+        8,
+      );
+    }
+  }
+
+  it.each(FILTER_CASES.map((filters) => [JSON.stringify(filters), filters] as const))(
+    "筛选 %s 的日/月与日×模型聚合与 JS 全量管线一致",
+    (_name, filters) => {
+      const store = openStore();
+      const records = generateRecords(400, 20261108);
+      commitRecords(store, records);
+      const now = new Date(2026, 10, 8, 15, 30, 0);
+      const stats = store.queryStats(filters, now);
+
+      expect(stats.snapshotAvailable).toBe(true);
+      const custom = { start: filters.start, end: filters.end };
+      const expectedRecords = filterUsageRecords(
+        records,
+        filters.range,
+        filters.project,
+        filters.provider,
+        filters.model,
+        now,
+        filters.harness,
+        filters.billing,
+        custom,
+      );
+
+      // 日/月桶：只含有记录的桶，降序，逐桶与 JS 汇总一致。
+      const byDay = bucketOf(expectedRecords, dayKeyOf);
+      expect(stats.daily.map((bucket) => bucket.key)).toEqual(
+        Array.from(byDay.keys()).sort().reverse(),
+      );
+      for (const bucket of stats.daily) {
+        expectBucket(bucket, summarizeRecords(byDay.get(bucket.key)!));
+      }
+      const byMonth = bucketOf(expectedRecords, monthKeyOf);
+      expect(stats.monthly.map((bucket) => bucket.key)).toEqual(
+        Array.from(byMonth.keys()).sort().reverse(),
+      );
+      for (const bucket of stats.monthly) {
+        expectBucket(bucket, summarizeRecords(byMonth.get(bucket.key)!));
+      }
+
+      // 日×模型：行集合与逐组合计一致；日降序、同日 Tokens 降序。
+      const pairs = new Map<string, UsageRecord[]>();
+      for (const record of expectedRecords) {
+        const key = `${dayKeyOf(record.timestamp)}|${record.model}`;
+        pairs.set(key, [...(pairs.get(key) ?? []), record]);
+      }
+      expect(stats.dailyModelsTruncated).toBe(false);
+      expect(stats.dailyModels.length).toBe(pairs.size);
+      const dayOrder = stats.dailyModels.map((row) => row.day);
+      expect(dayOrder).toEqual([...dayOrder].sort().reverse());
+      for (const row of stats.dailyModels) {
+        const rows = pairs.get(`${row.day}|${row.model}`)!;
+        expect(rows).toBeDefined();
+        expect(row.requests).toBe(rows.length);
+        expect(row.tokens).toBe(rows.reduce((sum, record) => sum + record.totalTokens, 0));
+        expect(row.inputTokens).toBe(rows.reduce((sum, record) => sum + record.inputTokens, 0));
+        expect(row.outputTokens).toBe(rows.reduce((sum, record) => sum + record.outputTokens, 0));
+        expect(row.cacheReadTokens).toBe(
+          rows.reduce((sum, record) => sum + record.cacheReadTokens, 0),
+        );
+        expect(row.credits).toBeCloseTo(
+          rows.reduce((sum, record) => sum + record.credits, 0),
+          8,
+        );
+        expect(row.hasTokens).toBe(rows.some((record) => record.hasTokenUsage));
+        expect(row.hasCredit).toBe(rows.some((record) => record.hasCredit));
+        // provider 取组内字典序最小值。
+        expect(row.provider).toBe(
+          Array.from(new Set(rows.map((record) => record.provider))).sort()[0],
+        );
+      }
+
+      // 月×模型：同口径不截断；月降序、同月 Tokens 降序。
+      const monthPairs = new Map<string, UsageRecord[]>();
+      for (const record of expectedRecords) {
+        const key = `${monthKeyOf(record.timestamp)}|${record.model}`;
+        monthPairs.set(key, [...(monthPairs.get(key) ?? []), record]);
+      }
+      expect(stats.monthlyModels.length).toBe(monthPairs.size);
+      const monthOrder = stats.monthlyModels.map((row) => row.month);
+      expect(monthOrder).toEqual([...monthOrder].sort().reverse());
+      for (const row of stats.monthlyModels) {
+        const rows = monthPairs.get(`${row.month}|${row.model}`)!;
+        expect(rows).toBeDefined();
+        expect(row.requests).toBe(rows.length);
+        expect(row.tokens).toBe(rows.reduce((sum, record) => sum + record.totalTokens, 0));
+        expect(row.credits).toBeCloseTo(
+          rows.reduce((sum, record) => sum + record.credits, 0),
+          8,
+        );
+        expect(row.provider).toBe(
+          Array.from(new Set(rows.map((record) => record.provider))).sort()[0],
+        );
+      }
+    },
+  );
+
+  it("日×模型天数超上限时截断到最近 370 天，单日不切断", () => {
+    const store = openStore();
+    const day = 24 * 60 * 60 * 1000;
+    const base = new Date(2026, 10, 8, 15, 30, 0).getTime();
+    // 380 个不同日期的记录（每天 1 条，同一模型）。
+    const records: UsageRecord[] = Array.from({ length: 380 }, (_, index) => ({
+      id: `claude:day-${index}`,
+      requestId: `request-day-${index}`,
+      sessionId: "session-1",
+      harness: "claude" as const,
+      project: "project-alpha",
+      model: "claude-sonnet",
+      provider: "Anthropic",
+      timestamp: base - index * day,
+      inputTokens: 100,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 110,
+      inputTokenSemantics: "fresh" as const,
+      hasTokenUsage: true,
+      credits: 0,
+      hasCredit: false,
+      status: "success" as const,
+    }));
+    commitRecords(store, records);
+    const stats = store.queryStats(
+      { range: "all", harness: "all", project: "all", provider: "all", model: "all", billing: "all" },
+      new Date(2026, 10, 8, 15, 30, 0),
+    );
+    expect(stats.dailyModelsTruncated).toBe(true);
+    expect(stats.dailyModels.length).toBe(370);
+    const days = stats.dailyModels.map((row) => row.day);
+    expect(days[0]).toBe(dayKeyOf(base));
+    expect(days[days.length - 1]).toBe(dayKeyOf(base - 369 * day));
+    // 日桶与月×模型不受截断影响。
+    expect(stats.daily.length).toBe(380);
+    expect(stats.monthlyModels.length).toBeGreaterThan(0);
+  });
+
+  it("空库统计视图不伪造零用量", () => {
+    const store = openStore();
+    const stats = store.queryStats({
+      range: "all",
+      harness: "all",
+      project: "all",
+      provider: "all",
+      model: "all",
+      billing: "all",
+    });
+    expect(stats.snapshotAvailable).toBe(false);
+    expect(stats.daily).toEqual([]);
+    expect(stats.monthly).toEqual([]);
+    expect(stats.dailyModels).toEqual([]);
+    expect(stats.dailyModelsTruncated).toBe(false);
+    expect(stats.monthlyModels).toEqual([]);
   });
 });

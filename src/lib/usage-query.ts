@@ -21,11 +21,15 @@ import {
   type HarnessFilter,
   type HarnessId,
   type TrendPoint,
+  type UsageBucketStat,
+  type UsageDayModelStat,
+  type UsageMonthModelStat,
   type UsageFacets,
   type UsageQueryFilters,
   type UsageRecord,
   type UsageRecordsPage,
   type UsageSource,
+  type UsageStatsView,
   type UsageSummary,
   type UsageSyncStatus,
   type UsageView,
@@ -489,6 +493,205 @@ export function buildUsageView(
     groups: queryGroups(db, where, params),
     facets: queryFacets(db, filters),
     filteredCount,
+  };
+}
+
+/** 日×模型透视的最大天数；超出时保留最近日期（单日行不切断）。约一年窗口。 */
+export const STATS_DAILY_MODEL_MAX_DAYS = 370;
+
+const LOCAL_DAY_BUCKET = "strftime('%Y-%m-%d', timestamp_ms / 1000, 'unixepoch', 'localtime')";
+
+function bucketStatsFromRows(
+  rows: Array<SummaryRow & { bucket: string }>,
+  creditRows: Array<{ bucket: string; harness: HarnessId; credits: number }>,
+): UsageBucketStat[] {
+  const creditTotals = new Map<string, Map<HarnessId, number>>();
+  for (const creditRow of creditRows) {
+    const bucket = creditTotals.get(creditRow.bucket) ?? new Map<HarnessId, number>();
+    bucket.set(creditRow.harness, creditRow.credits);
+    creditTotals.set(creditRow.bucket, bucket);
+  }
+  return rows.map((row) => {
+    const totals = creditTotals.get(row.bucket);
+    const creditsByHarness = HARNESS_OPTIONS.flatMap((option) => {
+      const credits = totals?.get(option.id);
+      return credits === undefined ? [] : [{ harness: option.id, label: option.label, credits }];
+    });
+    return {
+      key: row.bucket,
+      requests: row.requests,
+      credits: row.credits,
+      hasCredit: row.has_credit === 1 || creditsByHarness.length > 0,
+      creditsByHarness,
+      mixedCreditUnits: creditsByHarness.length > 1,
+      unbilledCredits: row.unbilled_credits,
+      tokens: row.tokens,
+      hasTokens: row.has_token_usage === 1,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      cacheReadTokens: row.cache_read_tokens,
+      cacheableInputTokens: row.cacheable_input_tokens,
+      cacheRate:
+        row.cacheable_input_tokens > 0
+          ? row.cache_read_tokens / row.cacheable_input_tokens
+          : 0,
+      successRate: row.requests > 0 ? row.successful / row.requests : 0,
+    };
+  });
+}
+
+/** 日/月桶聚合；bucketFormat 决定粒度，只输出有记录的桶，按桶降序。 */
+function queryBucketStats(
+  db: DatabaseSync,
+  where: string,
+  params: Array<string | number>,
+  bucketFormat: "%Y-%m-%d" | "%Y-%m",
+): UsageBucketStat[] {
+  const bucket = `strftime('${bucketFormat}', timestamp_ms / 1000, 'unixepoch', 'localtime')`;
+  const rows = db
+    .prepare(
+      `SELECT ${bucket} AS bucket, ${SUMMARY_SQL}
+       FROM usage_records WHERE ${where} GROUP BY bucket ORDER BY bucket DESC`,
+    )
+    .all(...params) as unknown as Array<SummaryRow & { bucket: string }>;
+  // 桶内 Credits 按 Harness 分列（单日可跨 Harness），与 summarizeRecords 一致。
+  const creditRows = db
+    .prepare(
+      `SELECT ${bucket} AS bucket, harness, COALESCE(SUM(credits), 0) AS credits
+       FROM usage_records WHERE ${where} AND has_credit = 1 GROUP BY bucket, harness`,
+    )
+    .all(...params) as unknown as Array<{ bucket: string; harness: HarnessId; credits: number }>;
+  return bucketStatsFromRows(rows, creditRows);
+}
+
+interface ModelBucketRow {
+  bucket: string;
+  model: string;
+  provider: string;
+  requests: number;
+  tokens: number;
+  has_token_usage: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  credits: number;
+  has_credit: number;
+}
+
+/** 周期×模型共用的聚合列；bucketExpr 决定粒度（日/月）。 */
+function queryModelBuckets(
+  db: DatabaseSync,
+  where: string,
+  params: Array<string | number>,
+  bucketExpr: string,
+  extraWhere = "",
+  extraParams: Array<string | number> = [],
+): ModelBucketRow[] {
+  return db
+    .prepare(
+      `SELECT ${bucketExpr} AS bucket, model, MIN(provider) AS provider,
+        COUNT(*) AS requests,
+        COALESCE(SUM(total_tokens), 0) AS tokens,
+        COALESCE(MAX(has_token_usage), 0) AS has_token_usage,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(credits), 0) AS credits,
+        COALESCE(MAX(has_credit), 0) AS has_credit
+      FROM usage_records WHERE ${where} ${extraWhere}
+      GROUP BY bucket, model
+      ORDER BY bucket DESC, tokens DESC`,
+    )
+    .all(...params, ...extraParams) as unknown as ModelBucketRow[];
+}
+
+function modelBucketStat(row: ModelBucketRow) {
+  return {
+    model: row.model,
+    provider: row.provider,
+    requests: row.requests,
+    tokens: row.tokens,
+    hasTokens: row.has_token_usage === 1,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    credits: row.credits,
+    hasCredit: row.has_credit === 1,
+  };
+}
+
+/**
+ * 日×模型聚合；天数超上限时用子查询取最近 N 天（模型列完整，不会出现单日被切断）。
+ * provider 取该 日×模型 组内字典序最小值，仅作标识色用途。
+ */
+function queryDailyModels(
+  db: DatabaseSync,
+  where: string,
+  params: Array<string | number>,
+): { rows: UsageDayModelStat[]; truncated: boolean } {
+  const dayCount = (
+    db
+      .prepare(`SELECT COUNT(DISTINCT ${LOCAL_DAY_BUCKET}) AS days FROM usage_records WHERE ${where}`)
+      .get(...params) as unknown as { days: number }
+  ).days;
+  const truncated = dayCount > STATS_DAILY_MODEL_MAX_DAYS;
+  const dayLimit = truncated
+    ? `AND ${LOCAL_DAY_BUCKET} IN (
+        SELECT day FROM (
+          SELECT DISTINCT ${LOCAL_DAY_BUCKET} AS day FROM usage_records
+          WHERE ${where} ORDER BY day DESC LIMIT ${STATS_DAILY_MODEL_MAX_DAYS}
+        )
+      )`
+    : "";
+  const rows = queryModelBuckets(db, where, params, LOCAL_DAY_BUCKET, dayLimit, truncated ? params : []);
+  return {
+    rows: rows.map((row) => ({ day: row.bucket, ...modelBucketStat(row) })),
+    truncated,
+  };
+}
+
+const LOCAL_MONTH_BUCKET = "strftime('%Y-%m', timestamp_ms / 1000, 'unixepoch', 'localtime')";
+
+/** 月×模型聚合；月份数有界（历史长度），不截断。 */
+function queryMonthlyModels(
+  db: DatabaseSync,
+  where: string,
+  params: Array<string | number>,
+): UsageMonthModelStat[] {
+  return queryModelBuckets(db, where, params, LOCAL_MONTH_BUCKET).map((row) => ({
+    month: row.bucket,
+    ...modelBucketStat(row),
+  }));
+}
+
+/** 统计面板聚合视图；status 由调用方在只读事务内提供。 */
+export function buildStatsView(
+  db: DatabaseSync,
+  filters: UsageQueryFilters,
+  now: Date,
+  status: UsageSyncStatus,
+): UsageStatsView {
+  if (!status.hasSnapshot) {
+    return {
+      revision: status.revision,
+      snapshotAvailable: false,
+      daily: [],
+      monthly: [],
+      dailyModels: [],
+      dailyModelsTruncated: false,
+      monthlyModels: [],
+    };
+  }
+  const { where, params } = filterSql(filters, now);
+  const dailyModels = queryDailyModels(db, where, params);
+  return {
+    revision: status.revision,
+    snapshotAvailable: true,
+    daily: queryBucketStats(db, where, params, "%Y-%m-%d"),
+    monthly: queryBucketStats(db, where, params, "%Y-%m"),
+    dailyModels: dailyModels.rows,
+    dailyModelsTruncated: dailyModels.truncated,
+    monthlyModels: queryMonthlyModels(db, where, params),
   };
 }
 
