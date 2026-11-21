@@ -126,7 +126,9 @@ async function loadWholeFile<F extends IncrementalFileBase>(
   file: F,
   stats: IncrementalStats,
 ): Promise<{ records: UsageRecord[]; cursor: UsageSessionLogState }> {
-  const buffer = await readFile(file.filePath);
+  // 只读 stat 尺寸内的旧前缀（与字节游标来源同口径）：stat 后 writer 追加的
+  // 字节下一轮按变化后的元数据补入，否则 cursorOffset 会超过已记录的 fileSize。
+  const buffer = await readRange(file.filePath, 0, file.size);
   stats.bodyBytesRead += buffer.length;
   stats.fullFilesRead += 1;
   const parsed = config.parseFile(file, buffer.toString("utf8"));
@@ -295,8 +297,9 @@ export async function readWholeFileUsageIncremental<F extends IncrementalFileBas
           }
         }
 
-        // 前缀校验通过后整文件重读：parser 需要游标之前的完整上下文。
-        const buffer = await readFile(file.filePath);
+        // 前缀校验通过后整文件重读：parser 需要游标之前的完整上下文。读取
+        // 仍以 stat 尺寸为界，读取期间的追加字节由下一轮按新元数据补入。
+        const buffer = await readRange(file.filePath, 0, file.size);
         stats.bodyBytesRead += buffer.length;
         stats.incrementalFilesRead += 1;
         for (const record of config.parseFile(file, buffer.toString("utf8"))) {

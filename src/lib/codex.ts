@@ -8,6 +8,7 @@ import {
   fingerprintAt,
   lastCompleteLineEnd,
   mapBounded,
+  readRange,
 } from "@/lib/incremental-core";
 import {
   CodexAssembly,
@@ -156,9 +157,15 @@ export interface CodexRolloutContent {
 
 export async function readCodexRolloutContent(
   filePath: string,
+  sizeBound?: number,
 ): Promise<CodexRolloutContent | undefined> {
   try {
-    const raw = await readFile(filePath);
+    // 增量路径传入 stat 尺寸上界：stat 后 writer 追加的字节下一轮按变化后的
+    // 元数据补入，否则游标 cursorOffset 会超过已记录的 fileSize。
+    const raw =
+      sizeBound === undefined
+        ? await readFile(filePath)
+        : await readRange(filePath, 0, sizeBound);
     if (!filePath.endsWith(".jsonl.zst")) {
       const cursorOffset = lastCompleteLineEnd(raw);
       return {

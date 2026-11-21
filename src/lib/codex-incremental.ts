@@ -324,7 +324,7 @@ export async function readCodexUsageIncremental(store: UsageStore): Promise<Incr
   const readFailed = new Set<string>();
   const toParseFiles = discovery.files.filter((file) => toParse.has(file.filePath));
   const loadedBuffers = await mapBounded(toParseFiles, FILE_IO_CONCURRENCY, async (file) =>
-    readCodexRolloutContent(file.filePath),
+    readCodexRolloutContent(file.filePath, file.size),
   );
   for (const [index, loadedFile] of loadedBuffers.entries()) {
     const file = toParseFiles[index]!;
@@ -401,7 +401,8 @@ export async function readCodexUsageIncremental(store: UsageStore): Promise<Incr
   const dependencyBuffers = await mapBounded(
     dependencyLoads,
     FILE_IO_CONCURRENCY,
-    async (entry) => readCodexRolloutContent(entry.path),
+    async (entry) =>
+      readCodexRolloutContent(entry.path, fileByPath.get(entry.path)?.size),
   );
   for (const [index, loadedFile] of dependencyBuffers.entries()) {
     const entry = dependencyLoads[index]!;
@@ -638,7 +639,7 @@ async function fullRebuild(
   const buffers = await mapBounded(
     discovery.files,
     FILE_IO_CONCURRENCY,
-    async (file) => readCodexRolloutContent(file.filePath),
+    async (file) => readCodexRolloutContent(file.filePath, file.size),
   );
   const loaded = new Map<string, CodexRolloutContent>();
   let skippedFiles = discovery.skippedFiles;
