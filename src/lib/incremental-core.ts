@@ -171,6 +171,9 @@ export function canonicalRecord(record: UsageRecord): UsageRecord {
     outputTokens: record.outputTokens,
     cacheReadTokens: record.cacheReadTokens,
     cacheCreationTokens: record.cacheCreationTokens,
+    ...(record.cacheCreation1hTokens === undefined
+      ? {}
+      : { cacheCreation1hTokens: record.cacheCreation1hTokens }),
     totalTokens: record.totalTokens,
     inputTokenSemantics: record.inputTokenSemantics,
     hasTokenUsage: record.hasTokenUsage,

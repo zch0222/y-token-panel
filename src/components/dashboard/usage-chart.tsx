@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { formatUsdCost } from "@/lib/model-pricing";
 import {
   formatCompact,
   formatCredits,
@@ -40,6 +41,7 @@ const granularityLabels: Record<TrendGranularity, string> = {
 };
 
 const metricLabels: Record<MetricKey, string> = {
+  cost: "估算成本",
   credits: "Credits",
   requests: "请求数",
   tokens: "Tokens",
@@ -48,6 +50,7 @@ const metricLabels: Record<MetricKey, string> = {
 
 function formatMetric(value: number, metric: MetricKey): string {
   if (metric === "tokens") return `${Math.round(value).toLocaleString("zh-CN")} Tokens`;
+  if (metric === "cost") return formatUsdCost(value);
   if (metric === "credits") return `${formatCredits(value)} Credits`;
   if (metric === "cacheRate") return formatPercent(value);
   return `${Math.round(value).toLocaleString("zh-CN")} 次请求`;
@@ -70,7 +73,7 @@ function ChartTooltip({
       <div className="mb-2 text-xs text-muted-foreground">{point.fullLabel}</div>
       <div className="flex items-center gap-2 text-sm font-medium">
         <span className="size-2 rounded-[2px] bg-primary" />
-        <span>{metric === "credits" ? "计费 Credits" : metricLabels[metric]}</span>
+        <span>{metric === "credits" ? "计费 Credits" : metric === "cost" ? "估算成本（USD）" : metricLabels[metric]}</span>
         <span className="ml-auto pl-4 tabular-nums">{formatMetric(point[metric], metric)}</span>
       </div>
       {showUnbilled && (
@@ -95,6 +98,7 @@ export function UsageChart({
   const showUnbilled = metric === "credits" && data.some((point) => point.unbilledCredits > 0);
   const axisFormatter = (value: number) => {
     if (metric === "cacheRate") return `${Math.round(value * 100)}%`;
+    if (metric === "cost") return value >= 1 ? formatCompact(value) : value.toFixed(3);
     if (metric === "requests") return Math.round(value).toString();
     return formatCompact(value);
   };

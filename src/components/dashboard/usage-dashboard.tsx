@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BalanceView } from "@/components/dashboard/balance-view";
+import { PricingView } from "@/components/dashboard/pricing-view";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { CustomRangePicker } from "@/components/dashboard/custom-range-picker";
 import { HarnessSwitcher } from "@/components/dashboard/harness-switcher";
@@ -39,6 +40,7 @@ import { InstallAppButton } from "@/components/pwa/install-app-button";
 import { StatsView } from "@/components/dashboard/stats-view";
 import { UsageChart, type ChartType } from "@/components/dashboard/usage-chart";
 import { UsageTables, type DetailTab } from "@/components/dashboard/usage-tables";
+import { formatUsdCost } from "@/lib/model-pricing";
 import { cn } from "@/lib/utils";
 import { UsageDashboardController } from "@/lib/usage-dashboard-controller";
 import {
@@ -216,6 +218,7 @@ const viewTitles: Record<DashboardView, { title: string; subtitle: string }> = {
   models: { title: "模型分析", subtitle: "比较不同模型的使用量与缓存效率" },
   projects: { title: "项目统计", subtitle: "了解各项目在不同 Harness 中的使用情况" },
   harnesses: { title: "Harness 对比", subtitle: "比较不同 AI Harness 的请求与消耗" },
+  pricing: { title: "模型价格", subtitle: "维护本地价格目录并同步 models.dev" },
   balance: { title: "余额查询", subtitle: "查询供应商账户余额与额度，内置限流保护" },
 };
 
@@ -333,6 +336,14 @@ export function UsageDashboard() {
   useEffect(() => {
     controller.setAutoRefresh(autoRefresh);
   }, [autoRefresh, controller]);
+
+  useEffect(() => {
+    void fetch("/api/pricing/models-dev", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ force: false }),
+    }).catch(() => undefined);
+  }, []);
 
   // 筛选变化交给控制器统一查询；切换时保留上一份数据（updating 状态）。
   const filters = useMemo<UsageQueryFilters>(
@@ -504,6 +515,8 @@ export function UsageDashboard() {
         <div className="mx-auto w-full max-w-[1500px] px-4 py-5 sm:px-6 sm:py-6">
           {viewName === "balance" ? (
             <BalanceView />
+          ) : viewName === "pricing" ? (
+            <PricingView />
           ) : (
           <>
           <HarnessSwitcher
@@ -687,9 +700,9 @@ export function UsageDashboard() {
 
           {viewName === "overview" && (
             <section className="panel mb-5 overflow-hidden">
-              <div className="grid grid-cols-2 md:grid-cols-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
                 {loading ? (
-                  Array.from({ length: 4 }, (_, index) => (
+                  Array.from({ length: 5 }, (_, index) => (
                     <div key={index} className="border-b border-border/70 p-6 md:border-b-0 md:border-r">
                       <Skeleton className="h-3 w-16" />
                       <Skeleton className="mt-4 h-7 w-24" />
@@ -705,6 +718,16 @@ export function UsageDashboard() {
                   </div>
                 ) : (
                   <>
+                    <MetricCard
+                      label="估算成本"
+                      value={formatUsdCost(summary.costUsd, summary.hasCost)}
+                      suffix={summary.hasCost ? "usd" : undefined}
+                      detail={summary.unpricedRequests > 0 ? `${summary.unpricedRequests} 条请求未定价` : undefined}
+                      hint="按本地模型价格目录与 Token 用量估算的美元成本；找不到价格的请求不计入，不是供应商账单"
+                      selected={metric === "cost"}
+                      onClick={() => setMetric("cost")}
+                      className="border-b border-r md:border-b-0"
+                    />
                     <MetricCard
                       label="计费 Credits"
                       value={formatCredits(summary.credits, summary.hasCredit)}

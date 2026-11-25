@@ -3,6 +3,20 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { BUILTIN_MODEL_PRICING } from "@/lib/model-pricing-seed";
+import {
+  calculateUsageCost,
+  findModelPricing,
+  validatePricingEntry,
+  normalizePricingEntry,
+  parseModelPricing,
+  type ModelPricingInfo,
+} from "@/lib/model-pricing";
+import {
+  deleteModelPricingInFile,
+  readModelPricingFile,
+  updateModelPricingInFile,
+} from "@/lib/model-pricing-file";
 import {
   buildRecordsPage,
   buildStatsView,
@@ -27,7 +41,7 @@ import {
   type UsageView,
 } from "@/lib/usage";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const APPLICATION_ID = 0x59545031; // "YTP1"，防止误打开其他应用的 SQLite 文件。
 const DEFAULT_DATABASE_PATH = path.join(".data", "usage.sqlite");
 const INTERRUPTED_SYNC_ERROR = "上次同步在服务重启时中断；已保留最后成功快照。";
@@ -103,8 +117,15 @@ function nullableNumber(value: number | undefined): number | null {
 }
 
 function snapshotContent(usage: UsageResponse): string {
+  const costFields = new Set([
+    "pricingModel", "hasCost", "inputCostUsd", "outputCostUsd",
+    "cacheReadCostUsd", "cacheCreationCostUsd", "totalCostUsd",
+  ]);
+  const records = usage.records.map((record) => Object.fromEntries(
+    Object.entries(record).filter(([key]) => !costFields.has(key)),
+  ));
   return JSON.stringify({
-    records: usage.records,
+    records,
     sources: usage.sources,
     scannedFiles: usage.scannedFiles,
     skippedFiles: usage.skippedFiles,
@@ -130,6 +151,7 @@ function validateUsageForStorage(usage: UsageResponse): void {
       outputTokens: record.outputTokens,
       cacheReadTokens: record.cacheReadTokens,
       cacheCreationTokens: record.cacheCreationTokens,
+      cacheCreation1hTokens: record.cacheCreation1hTokens ?? 0,
       totalTokens: record.totalTokens,
     })) {
       assertSafeInteger(value, `${record.id}.${field}`);
@@ -140,6 +162,11 @@ function validateUsageForStorage(usage: UsageResponse): void {
       record.contextUsageRatio,
       record.estimatedDurationMs,
       record.firstTokenMs,
+      record.inputCostUsd,
+      record.outputCostUsd,
+      record.cacheReadCostUsd,
+      record.cacheCreationCostUsd,
+      record.totalCostUsd,
     ]) {
       if (value !== undefined) assertFinite(value, record.id);
     }
@@ -179,6 +206,7 @@ export class UsageStore {
         this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       }
       if (recoverInterruptedSync) this.recoverInterruptedSync();
+      this.initializeModelPricing();
     } catch (error) {
       database?.close();
       throw new Error(`无法初始化用量数据库 ${databasePath}: ${errorMessage(error)}`, {
@@ -187,8 +215,31 @@ export class UsageStore {
     }
   }
 
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const existing = this.db
+      .prepare("SELECT 1 AS found FROM pragma_table_info(?) WHERE name = ?")
+      .get(table, column) as { found: number } | undefined;
+    if (existing === undefined) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  private createModelPricingTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS model_pricing (
+        model_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        input_cost_per_million TEXT NOT NULL,
+        output_cost_per_million TEXT NOT NULL,
+        cache_read_cost_per_million TEXT NOT NULL,
+        cache_creation_cost_per_million TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+  }
+
   private migrate(): void {
-    const { user_version: version } = this.db.prepare("PRAGMA user_version").get() as {
+    let { user_version: version } = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
     if (version > SCHEMA_VERSION) {
@@ -233,19 +284,18 @@ export class UsageStore {
         this.db.exec("DELETE FROM session_log_sync");
         this.db.exec(
           `INSERT INTO usage_schema_migrations (version, applied_at)
-           VALUES (${SCHEMA_VERSION}, ${Date.now()})
+           VALUES (3, ${Date.now()})
            ON CONFLICT(version) DO NOTHING`,
         );
-        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        this.db.exec("PRAGMA user_version = 3");
         this.db.exec("COMMIT");
+        version = 3;
       } catch (error) {
         this.db.exec("ROLLBACK");
         throw new Error(`用量数据库迁移到 v3 失败，已回滚: ${errorMessage(error)}`, {
           cause: error,
         });
       }
-      this.validateSchema();
-      return;
     }
 
     // v3 → v4：KCode 解析新增第三方 provider 归属（llm.request.modelAlias 前缀
@@ -258,14 +308,45 @@ export class UsageStore {
         this.db.exec("DELETE FROM session_log_sync WHERE harness = 'kcode'");
         this.db.exec(
           `INSERT INTO usage_schema_migrations (version, applied_at)
-           VALUES (${SCHEMA_VERSION}, ${Date.now()})
+           VALUES (4, ${Date.now()})
            ON CONFLICT(version) DO NOTHING`,
         );
-        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        this.db.exec("PRAGMA user_version = 4");
         this.db.exec("COMMIT");
+        version = 4;
       } catch (error) {
         this.db.exec("ROLLBACK");
         throw new Error(`用量数据库迁移到 v4 失败，已回滚: ${errorMessage(error)}`, {
+          cause: error,
+        });
+      }
+    }
+
+    // v4 → v5：新增本地模型价格表、请求成本列与 Claude 1 小时缓存写入子集。
+    // Claude / Devin 需要重扫才能补出 1h 缓存字段；其余 Harness 的成本可直接
+    // 由已有 Token 列回填，不需要重读原始日志。
+    if (version === 4) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.addColumnIfMissing("usage_records", "cache_creation_1h_tokens", "INTEGER NOT NULL DEFAULT 0");
+        this.addColumnIfMissing("usage_records", "pricing_model", "TEXT");
+        this.addColumnIfMissing("usage_records", "input_cost_usd", "REAL");
+        this.addColumnIfMissing("usage_records", "output_cost_usd", "REAL");
+        this.addColumnIfMissing("usage_records", "cache_read_cost_usd", "REAL");
+        this.addColumnIfMissing("usage_records", "cache_creation_cost_usd", "REAL");
+        this.addColumnIfMissing("usage_records", "total_cost_usd", "REAL");
+        this.createModelPricingTable();
+        this.db.exec("DELETE FROM session_log_sync WHERE harness IN ('claude', 'devin')");
+        this.db.exec(
+          `INSERT INTO usage_schema_migrations (version, applied_at)
+           VALUES (5, ${Date.now()})
+           ON CONFLICT(version) DO NOTHING`,
+        );
+        this.db.exec("PRAGMA user_version = 5");
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw new Error(`用量数据库迁移到 v5 失败，已回滚: ${errorMessage(error)}`, {
           cause: error,
         });
       }
@@ -295,6 +376,7 @@ export class UsageStore {
           output_tokens INTEGER NOT NULL,
           cache_read_tokens INTEGER NOT NULL,
           cache_creation_tokens INTEGER NOT NULL,
+          cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
           total_tokens INTEGER NOT NULL,
           input_token_semantics TEXT NOT NULL
             CHECK (input_token_semantics IN ('fresh', 'total')),
@@ -306,6 +388,12 @@ export class UsageStore {
           context_usage_ratio REAL,
           estimated_duration_ms REAL,
           first_token_ms REAL,
+          pricing_model TEXT,
+          input_cost_usd REAL,
+          output_cost_usd REAL,
+          cache_read_cost_usd REAL,
+          cache_creation_cost_usd REAL,
+          total_cost_usd REAL,
           status TEXT NOT NULL CHECK (status IN ('success', 'error')),
           UNIQUE (harness, record_id)
         );
@@ -320,6 +408,16 @@ export class UsageStore {
           ON usage_records(provider, model);
         CREATE INDEX IF NOT EXISTS idx_usage_records_record_id
           ON usage_records(harness, record_id);
+
+        CREATE TABLE IF NOT EXISTS model_pricing (
+          model_id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          input_cost_per_million TEXT NOT NULL,
+          output_cost_per_million TEXT NOT NULL,
+          cache_read_cost_per_million TEXT NOT NULL,
+          cache_creation_cost_per_million TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS usage_sources (
           harness TEXT PRIMARY KEY,
@@ -401,10 +499,15 @@ export class UsageStore {
       usage_records: [
         "id", "record_id", "request_id", "session_id", "harness", "project",
         "model", "provider", "timestamp_ms", "input_tokens", "output_tokens",
-        "cache_read_tokens", "cache_creation_tokens", "total_tokens",
+        "cache_read_tokens", "cache_creation_tokens", "cache_creation_1h_tokens", "total_tokens",
         "input_token_semantics", "has_token_usage", "credits", "has_credit",
         "reported_credits", "billable", "context_usage_ratio", "estimated_duration_ms",
-        "first_token_ms", "status",
+        "first_token_ms", "pricing_model", "input_cost_usd", "output_cost_usd",
+        "cache_read_cost_usd", "cache_creation_cost_usd", "total_cost_usd", "status",
+      ],
+      model_pricing: [
+        "model_id", "display_name", "input_cost_per_million", "output_cost_per_million",
+        "cache_read_cost_per_million", "cache_creation_cost_per_million", "updated_at",
       ],
       usage_sources: [
         "harness", "record_count", "scanned_files", "skipped_files", "source",
@@ -458,6 +561,261 @@ export class UsageStore {
          WHERE phase = 'importing'`,
       )
       .run(INTERRUPTED_SYNC_ERROR);
+  }
+
+  private static toPricingInfo(row: {
+    model_id: string;
+    display_name: string;
+    input_cost_per_million: string;
+    output_cost_per_million: string;
+    cache_read_cost_per_million: string;
+    cache_creation_cost_per_million: string;
+  }): ModelPricingInfo {
+    return {
+      modelId: row.model_id,
+      displayName: row.display_name,
+      inputCostPerMillion: row.input_cost_per_million,
+      outputCostPerMillion: row.output_cost_per_million,
+      cacheReadCostPerMillion: row.cache_read_cost_per_million,
+      cacheCreationCostPerMillion: row.cache_creation_cost_per_million,
+    };
+  }
+
+  private pricingRows(): ModelPricingInfo[] {
+    const rows = this.db
+      .prepare("SELECT * FROM model_pricing ORDER BY model_id")
+      .all() as unknown as Array<Parameters<typeof UsageStore.toPricingInfo>[0]>;
+    return rows.map((row) => UsageStore.toPricingInfo(row));
+  }
+
+  private upsertPricingRow(entry: ModelPricingInfo, now = Date.now()): number {
+    const result = this.db
+      .prepare(
+        `INSERT INTO model_pricing (
+          model_id, display_name, input_cost_per_million, output_cost_per_million,
+          cache_read_cost_per_million, cache_creation_cost_per_million, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(model_id) DO UPDATE SET
+          display_name = excluded.display_name,
+          input_cost_per_million = excluded.input_cost_per_million,
+          output_cost_per_million = excluded.output_cost_per_million,
+          cache_read_cost_per_million = excluded.cache_read_cost_per_million,
+          cache_creation_cost_per_million = excluded.cache_creation_cost_per_million,
+          updated_at = excluded.updated_at
+        WHERE display_name <> excluded.display_name
+           OR input_cost_per_million <> excluded.input_cost_per_million
+           OR output_cost_per_million <> excluded.output_cost_per_million
+           OR cache_read_cost_per_million <> excluded.cache_read_cost_per_million
+           OR cache_creation_cost_per_million <> excluded.cache_creation_cost_per_million`,
+      )
+      .run(
+        entry.modelId,
+        entry.displayName,
+        entry.inputCostPerMillion,
+        entry.outputCostPerMillion,
+        entry.cacheReadCostPerMillion,
+        entry.cacheCreationCostPerMillion,
+        now,
+      );
+    return Number(result.changes);
+  }
+
+  /** 启动时 seed 内置价目并应用本地覆盖；覆盖文件只存用户/models.dev 显式覆盖与删除 tombstone。 */
+  private initializeModelPricing(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const seed = this.db.prepare(
+        `INSERT OR IGNORE INTO model_pricing (
+          model_id, display_name, input_cost_per_million, output_cost_per_million,
+          cache_read_cost_per_million, cache_creation_cost_per_million, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      );
+      for (const entry of BUILTIN_MODEL_PRICING) {
+        seed.run(
+          entry.modelId,
+          entry.displayName,
+          entry.inputCostPerMillion,
+          entry.outputCostPerMillion,
+          entry.cacheReadCostPerMillion,
+          entry.cacheCreationCostPerMillion,
+        );
+      }
+
+      const file = readModelPricingFile();
+      for (const entry of file.models) this.upsertPricingRow(entry);
+      for (const modelId of file.deletedModelIds) {
+        this.db.prepare("DELETE FROM model_pricing WHERE model_id = ?").run(modelId);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.backfillMissingUsageCosts();
+  }
+
+  /** 只回填尚未定价的历史记录；已有非空成本不随价格修改重算（cc-switch 口径）。 */
+  backfillMissingUsageCosts(): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id, model, input_tokens, output_tokens, cache_read_tokens,
+          cache_creation_tokens, cache_creation_1h_tokens, input_token_semantics
+         FROM usage_records
+         WHERE total_cost_usd IS NULL`,
+      )
+      .all() as unknown as Array<{
+      id: number;
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_tokens: number;
+      cache_creation_tokens: number;
+      cache_creation_1h_tokens: number;
+      input_token_semantics: "fresh" | "total";
+    }>;
+    if (rows.length === 0) return 0;
+    const pricing = this.pricingRows();
+    if (pricing.length === 0) return 0;
+
+    let updated = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const update = this.db.prepare(
+        `UPDATE usage_records SET
+          pricing_model = ?, input_cost_usd = ?, output_cost_usd = ?,
+          cache_read_cost_usd = ?, cache_creation_cost_usd = ?, total_cost_usd = ?
+         WHERE id = ?`,
+      );
+      for (const row of rows) {
+        const match = findModelPricing(pricing, row.model);
+        if (!match) continue;
+        const parsed = parseModelPricing(match.pricing);
+        if (!parsed) continue;
+        const cost = calculateUsageCost({
+          inputTokens: row.input_tokens,
+          outputTokens: row.output_tokens,
+          cacheReadTokens: row.cache_read_tokens,
+          cacheCreationTokens: row.cache_creation_tokens,
+          cacheCreation1hTokens: row.cache_creation_1h_tokens,
+          inputTokenSemantics: row.input_token_semantics,
+        }, parsed);
+        update.run(
+          match.matchedModelId,
+          cost.inputCostUsd,
+          cost.outputCostUsd,
+          cost.cacheReadCostUsd,
+          cost.cacheCreationCostUsd,
+          cost.totalCostUsd,
+          row.id,
+        );
+        updated += 1;
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return updated;
+  }
+
+  /** 应用用户覆盖文件的新外部修改；不重建文件，也不把完整内置表导出为覆盖。 */
+  syncLocalModelPricing(): { upserted: number; deleted: number } {
+    const file = readModelPricingFile();
+    let upserted = 0;
+    let deleted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const entry of file.models) upserted += this.upsertPricingRow(entry);
+      for (const modelId of file.deletedModelIds) {
+        deleted += Number(
+          this.db.prepare("DELETE FROM model_pricing WHERE model_id = ?").run(modelId).changes,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    if (upserted > 0) this.backfillMissingUsageCosts();
+    return { upserted, deleted };
+  }
+
+  listModelPricing(): ModelPricingInfo[] {
+    this.syncLocalModelPricing();
+    return this.pricingRows();
+  }
+
+  updateModelPricing(entryInput: ModelPricingInfo): number {
+    return this.updateModelPricingBatch([entryInput]);
+  }
+
+  /** 批量 upsert（用户编辑与 models.dev 同步共用）；返回数据库中实际发生变化的行数。 */
+  updateModelPricingBatch(entriesInput: ModelPricingInfo[]): number {
+    const entries = new Map<string, ModelPricingInfo>();
+    for (const input of entriesInput) {
+      const entry = normalizePricingEntry(input);
+      const error = validatePricingEntry(entry);
+      if (error) throw new Error(error);
+      entries.set(entry.modelId, entry);
+    }
+    if (entries.size === 0) return 0;
+    const values = Array.from(entries.values());
+
+    this.syncLocalModelPricing();
+    let changed = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const entry of values) changed += this.upsertPricingRow(entry);
+      // 覆盖文件只写显式导入/编辑的模型，并清除对应删除 tombstone。
+      updateModelPricingInFile(values);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    if (changed > 0) this.backfillMissingUsageCosts();
+    return changed;
+  }
+
+  deleteModelPricing(modelId: string): void {
+    const trimmed = modelId.trim();
+    if (!trimmed) throw new Error("模型 ID 不能为空");
+    this.syncLocalModelPricing();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM model_pricing WHERE model_id = ?").run(trimmed);
+      deleteModelPricingInFile(trimmed);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** 扫描输出写入快照前计算成本；价格缺失时保留 undefined，后续同步价格可回填。 */
+  private enrichUsageWithCosts(usage: UsageResponse): UsageResponse {
+    const pricing = this.pricingRows();
+    if (pricing.length === 0) return usage;
+    return {
+      ...usage,
+      records: usage.records.map((record) => {
+        const match = findModelPricing(pricing, record.model);
+        if (!match) return record;
+        const parsed = parseModelPricing(match.pricing);
+        if (!parsed) return record;
+        const cost = calculateUsageCost(record, parsed);
+        return {
+          ...record,
+          pricingModel: match.matchedModelId,
+          inputCostUsd: cost.inputCostUsd,
+          outputCostUsd: cost.outputCostUsd,
+          cacheReadCostUsd: cost.cacheReadCostUsd,
+          cacheCreationCostUsd: cost.cacheCreationCostUsd,
+          totalCostUsd: cost.totalCostUsd,
+          hasCost: true,
+        };
+      }),
+    };
   }
 
   private statusRow(): StatusRow {
@@ -597,10 +955,13 @@ export class UsageStore {
     incrementals: UsageIncrementalCommit[] = [],
   ): UsageCommitResult {
     validateUsageForStorage(usage);
+    // 内容代次只代表扫描器采集到的用量本身；价格目录变化不能伪装成用量变化。
+    const contentHash = createHash("sha256").update(snapshotContent(usage)).digest("hex");
+    usage = this.enrichUsageWithCosts(usage);
+    validateUsageForStorage(usage);
     if (new Set(incrementals.map((incremental) => incremental.harness)).size !== incrementals.length) {
       throw new Error("同一来源出现多个增量事务批次");
     }
-    const contentHash = createHash("sha256").update(snapshotContent(usage)).digest("hex");
 
     // hash 在事务外计算；代次判定、响应构造和全部写入必须在同一写事务内，
     // 防止另一个连接在两条语句之间提交不同代数据。
@@ -660,10 +1021,12 @@ export class UsageStore {
           INSERT INTO usage_records (
             record_id, request_id, session_id, harness, project, model, provider,
             timestamp_ms, input_tokens, output_tokens, cache_read_tokens,
-            cache_creation_tokens, total_tokens, input_token_semantics,
+            cache_creation_tokens, cache_creation_1h_tokens, total_tokens, input_token_semantics,
             has_token_usage, credits, has_credit, reported_credits, billable,
-            context_usage_ratio, estimated_duration_ms, first_token_ms, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            context_usage_ratio, estimated_duration_ms, first_token_ms,
+            pricing_model, input_cost_usd, output_cost_usd, cache_read_cost_usd,
+            cache_creation_cost_usd, total_cost_usd, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const insertDedup = this.db.prepare(`
           INSERT INTO usage_dedup (harness, dedup_key, record_row_id, created_at)
@@ -685,6 +1048,7 @@ export class UsageStore {
             record.outputTokens,
             record.cacheReadTokens,
             record.cacheCreationTokens,
+            record.cacheCreation1hTokens ?? 0,
             record.totalTokens,
             record.inputTokenSemantics,
             record.hasTokenUsage ? 1 : 0,
@@ -695,6 +1059,12 @@ export class UsageStore {
             nullableNumber(record.contextUsageRatio),
             nullableNumber(record.estimatedDurationMs),
             nullableNumber(record.firstTokenMs),
+            record.hasCost === true ? record.pricingModel ?? null : null,
+            nullableNumber(record.inputCostUsd),
+            nullableNumber(record.outputCostUsd),
+            nullableNumber(record.cacheReadCostUsd),
+            nullableNumber(record.cacheCreationCostUsd),
+            nullableNumber(record.totalCostUsd),
             record.status,
           );
           insertDedup.run(record.harness, record.id, result.lastInsertRowid, now);
@@ -796,7 +1166,7 @@ export class UsageStore {
           .prepare("SELECT * FROM usage_records WHERE harness = ? ORDER BY timestamp_ms DESC, id ASC")
           .all(harness)
       : this.db.prepare("SELECT * FROM usage_records ORDER BY timestamp_ms DESC, id ASC").all()) as unknown as RecordRow[];
-    return rows.map(mapRecordRow);
+    return rows.map((row) => mapRecordRow(row));
   }
 
   /**

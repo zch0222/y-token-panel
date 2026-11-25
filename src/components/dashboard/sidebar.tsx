@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Wallet,
+  Tags,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +37,7 @@ export type DashboardView =
   | "models"
   | "projects"
   | "harnesses"
+  | "pricing"
   | "balance";
 
 interface SidebarProps {
@@ -54,6 +56,7 @@ const navigation = [
   { id: "models" as const, label: "模型分析", icon: Boxes },
   { id: "harnesses" as const, label: "Harness 对比", icon: Blocks },
   { id: "projects" as const, label: "项目统计", icon: FolderKanban },
+  { id: "pricing" as const, label: "模型价格", icon: Tags },
   { id: "balance" as const, label: "余额查询", icon: Wallet },
 ];
 
@@ -188,7 +191,7 @@ export function Sidebar({
               </div>
             )}
             <div className="mt-1.5 text-[11px] text-muted-foreground">
-              {today.hasTokens ? `${formatCompact(today.tokens)} Tokens · ` : ""}
+              {today.hasCost ? `估算 ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(today.costUsd)} · ` : ""}{today.hasTokens ? `${formatCompact(today.tokens)} Tokens · ` : ""}
               {today.requests} 次请求
             </div>
           </div>

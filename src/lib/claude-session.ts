@@ -56,6 +56,9 @@ interface ClaudeUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  cache_creation?: {
+    ephemeral_1h_input_tokens?: number;
+  };
 }
 
 export interface ClaudeTranscriptLine {
@@ -233,6 +236,7 @@ interface ClaudeAssistantCandidate {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheCreation1hTokens?: number;
 }
 
 function hasBillableTokens(candidate: ClaudeAssistantCandidate): boolean {
@@ -356,6 +360,9 @@ export function parseClaudeTranscriptIncremental(
       outputTokens: nonNegativeInteger(usage.output_tokens),
       cacheReadTokens: nonNegativeInteger(usage.cache_read_input_tokens),
       cacheCreationTokens: nonNegativeInteger(usage.cache_creation_input_tokens),
+      ...(usage.cache_creation?.ephemeral_1h_input_tokens === undefined
+        ? {}
+        : { cacheCreation1hTokens: nonNegativeInteger(usage.cache_creation.ephemeral_1h_input_tokens) }),
     };
     const existing = messages.get(message.id);
     if (!existing || shouldReplaceCandidate(existing, candidate)) {
@@ -411,6 +418,9 @@ export function parseClaudeTranscriptIncremental(
       outputTokens: candidate.outputTokens,
       cacheReadTokens: candidate.cacheReadTokens,
       cacheCreationTokens: candidate.cacheCreationTokens,
+      ...(candidate.cacheCreation1hTokens === undefined
+        ? {}
+        : { cacheCreation1hTokens: candidate.cacheCreation1hTokens }),
       totalTokens,
       inputTokenSemantics: "fresh",
       hasTokenUsage: totalTokens > 0,
