@@ -35,6 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatUsdCost } from "@/lib/model-pricing";
 import { cn } from "@/lib/utils";
 import {
   formatFirstTokenSeconds,
@@ -210,6 +211,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
           </TableHead>
           <TableHead className={headClass}>计费 Credits</TableHead>
           <TableHead className={headClass}>Tokens</TableHead>
+          <TableHead className={headClass} title="按本地模型价格目录估算的美元成本；未定价请求不计入">价格</TableHead>
           <TableHead className={headClass} title={SPEED_HELP}>
             <span className="inline-flex items-center gap-0.5">
               速度 <Gauge className="size-3 text-muted-foreground" />
@@ -225,7 +227,7 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
       </TableHeader>
       <TableBody>
         {stats.length === 0 ? (
-          <EmptyRow colSpan={9} />
+          <EmptyRow colSpan={10} />
         ) : (
           stats.map((stat) => {
             const label =
@@ -268,6 +270,13 @@ function GroupTable({ stats, dimension }: { stats: GroupStat[]; dimension: Detai
                   <span title={stat.hasTokens ? stat.tokens.toLocaleString("zh-CN") : "Token 数据未上报"}>
                     {stat.hasTokens ? formatCompact(stat.tokens) : "—"}
                   </span>
+                </TableCell>
+                <TableCell
+                  className={cn(cellClass, "font-medium")}
+                  title={stat.unpricedRequests > 0 ? `${stat.unpricedRequests} 条请求未定价，当前为已定价部分下限` : "按本地模型价格目录估算的美元成本"}
+                >
+                  {formatUsdCost(stat.costUsd, stat.hasCost)}
+                  {stat.unpricedRequests > 0 ? "*" : ""}
                 </TableCell>
                 <SpeedCell stat={stat} />
                 <TableCell className={cellClass} title={FIRST_TOKEN_HELP}>
@@ -325,7 +334,7 @@ function RequestTable({
 
   return (
     <div>
-      <Table className="min-w-[1330px]">
+      <Table className="min-w-[1420px]">
         <TableHeader>
           <TableRow className="border-border/70 hover:bg-transparent">
             <TableHead className={cn(headClass, "pl-6")}>时间</TableHead>
@@ -336,6 +345,7 @@ function RequestTable({
             <TableHead className={cn(headClass, "text-right")}>输出</TableHead>
             <TableHead className={cn(headClass, "text-right")}>缓存</TableHead>
             <TableHead className={cn(headClass, "text-right")}>总 Tokens</TableHead>
+            <TableHead className={cn(headClass, "text-right")} title="按本地模型价格目录估算的美元成本；未定价请求显示 —">价格</TableHead>
             <TableHead className={cn(headClass, "text-right")} title={SPEED_HELP}>
               <span className="inline-flex items-center gap-0.5">
                 速度 <Gauge className="size-3 text-muted-foreground" />
@@ -350,11 +360,11 @@ function RequestTable({
         </TableHeader>
         <TableBody>
           {loading ? (
-            <EmptyRow colSpan={12} title="正在加载请求日志…" description="请稍候，日志返回后会自动展示" />
+            <EmptyRow colSpan={13} title="正在加载请求日志…" description="请稍候，日志返回后会自动展示" />
           ) : unavailable ? (
-            <EmptyRow colSpan={12} title="请求日志加载失败" description="请点击上方“重试”，请勿将此状态理解为零条请求" />
+            <EmptyRow colSpan={13} title="请求日志加载失败" description="请点击上方“重试”，请勿将此状态理解为零条请求" />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={12} />
+            <EmptyRow colSpan={13} />
           ) : (
             rows.map((record) => (
               <TableRow
@@ -399,6 +409,12 @@ function RequestTable({
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right font-medium")}>
                   {record.hasTokenUsage ? formatCompact(record.totalTokens) : "—"}
+                </TableCell>
+                <TableCell
+                  className={cn(cellClass, "text-right font-medium")}
+                  title={record.pricingModel ? `按价格模型 ${record.pricingModel} 估算` : "未在本地价格目录命中模型"}
+                >
+                  {formatUsdCost(record.totalCostUsd, record.totalCostUsd !== undefined)}
                 </TableCell>
                 <TableCell className={cn(cellClass, "text-right")}>
                   <RequestSpeedValue record={record} />
@@ -679,6 +695,16 @@ export function UsageTables({
                 <DetailItem
                   label="总 Tokens"
                   value={detail.hasTokenUsage ? detail.totalTokens.toLocaleString("zh-CN") : "未上报"}
+                />
+                <DetailItem
+                  label="估算价格"
+                  value={
+                    detail.totalCostUsd === undefined
+                      ? detail.hasTokenUsage
+                        ? "未定价"
+                        : "—"
+                      : `${formatUsdCost(detail.totalCostUsd, true)}${detail.pricingModel ? `（${detail.pricingModel}）` : ""}`
+                  }
                 />
                 <DetailItem
                   label="缓存读取"
