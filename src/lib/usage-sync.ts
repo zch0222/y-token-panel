@@ -6,6 +6,7 @@ import {
   getUsageStore,
   type UsageCommitResult,
 } from "@/lib/usage-store";
+import type { HarnessId } from "@/lib/usage";
 
 interface WorkerResultMessage {
   type: "complete";
@@ -21,6 +22,8 @@ type WorkerMessage = WorkerResultMessage | WorkerErrorMessage;
 
 interface UsageSyncGlobal {
   inFlight?: Promise<UsageCommitResult>;
+  /** 在途 worker 的扫描范围；undefined 表示全量（覆盖任意单来源请求）。 */
+  inFlightHarness?: HarnessId;
 }
 
 const SYNC_KEY = Symbol.for("y-token-panel.usage-sync");
@@ -50,7 +53,7 @@ function syncTimeoutMs(): number {
     : DEFAULT_SYNC_TIMEOUT_MS;
 }
 
-function runWorker(): Promise<UsageCommitResult> {
+function runWorker(harness?: HarnessId): Promise<UsageCommitResult> {
   const workerPath = path.resolve(process.cwd(), "src", "lib", "usage-scan-worker.cjs");
   return new Promise<UsageCommitResult>((resolve, reject) => {
     // 与 new Worker(...) 等价，但不让 Turbopack 把运行时绝对路径入口转换成
@@ -61,6 +64,7 @@ function runWorker(): Promise<UsageCommitResult> {
         workerData: {
           rootDir: process.cwd(),
           databasePath: getUsageDatabasePath(),
+          harness,
         },
         // 不继承 Next 调试参数；Node 22 原生 strip-types 足以执行 worker 入口。
         execArgv: [],
@@ -104,15 +108,32 @@ function runWorker(): Promise<UsageCommitResult> {
   });
 }
 
-/** 同一 Next 进程中的所有手动、自动和可见性同步共享同一个 worker。 */
-export function requestUsageSync(): Promise<UsageCommitResult> {
+/**
+ * 同一 Next 进程中的所有手动、自动和可见性同步共享同一个 worker。
+ * 带 harness 参数时只扫描该来源：在途全量同步已覆盖任意单来源请求，
+ * 同范围请求直接搭车；范围不同的请求等在途 worker 结束后重新入队，
+ * 保证任意时刻只有一个 worker 写库。
+ */
+export function requestUsageSync(harness?: HarnessId): Promise<UsageCommitResult> {
   const state = sharedState();
-  if (state.inFlight) return state.inFlight;
+  if (state.inFlight) {
+    if (state.inFlightHarness === undefined || state.inFlightHarness === harness) {
+      return state.inFlight;
+    }
+    return state.inFlight.then(
+      () => requestUsageSync(harness),
+      () => requestUsageSync(harness),
+    );
+  }
 
-  const promise = runWorker();
+  const promise = runWorker(harness);
   state.inFlight = promise;
+  state.inFlightHarness = harness;
   const clear = () => {
-    if (state.inFlight === promise) state.inFlight = undefined;
+    if (state.inFlight === promise) {
+      state.inFlight = undefined;
+      state.inFlightHarness = undefined;
+    }
   };
   void promise.then(clear, clear);
 

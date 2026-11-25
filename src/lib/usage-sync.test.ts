@@ -103,4 +103,47 @@ describe("独立用量 worker", () => {
     expect(getUsageStore().getSnapshotJson()).not.toBe(lastSuccess); // lastSync 更新，revision 不变。
     expect(getUsageStore().getStatus()).toMatchObject({ phase: "ready", revision: 1 });
   }, 60_000);
+
+  it("同范围单来源同步共享一个 Promise，全量在途覆盖单来源请求", async () => {
+    // 同范围搭车：同一个 worker，同一个 Promise。
+    const first = requestUsageSync("claude");
+    const second = requestUsageSync("claude");
+    expect(second).toBe(first);
+    await first;
+
+    // 全量在途覆盖任意单来源请求：直接复用全量 Promise。
+    const full = requestUsageSync();
+    const joiner = requestUsageSync("codex");
+    expect(joiner).toBe(full);
+    await full;
+
+    // 反向不成立：单来源在途时全量请求必须排队独立执行。
+    const scoped = requestUsageSync("dsh");
+    const independentFull = requestUsageSync();
+    expect(independentFull).not.toBe(scoped);
+    await Promise.all([scoped, independentFull]);
+    expect(getUsageStore().getStatus()).toMatchObject({ phase: "ready" });
+  }, 60_000);
+
+  it("不同范围的单来源同步串行执行，均能完成", async () => {
+    const [claudeResult, codexResult] = await Promise.all([
+      requestUsageSync("claude"),
+      requestUsageSync("codex"),
+    ]);
+    expect(claudeResult).toMatchObject({ recordCount: 0 });
+    expect(codexResult).toMatchObject({ recordCount: 0 });
+    expect(getUsageStore().getStatus()).toMatchObject({ phase: "ready" });
+  }, 60_000);
+
+  it("非法 harness 范围worker 失败但不破坏已有快照", async () => {
+    await requestUsageSync();
+    const lastSuccess = getUsageStore().getSnapshotJson();
+    // 绕过类型系统直接传入非法范围：worker 入口校验拒绝。
+    await expect(
+      (requestUsageSync as (harness?: string) => Promise<unknown>)("not-a-harness"),
+    ).rejects.toThrow();
+    expect(getUsageStore().getSnapshotJson()).toBe(lastSuccess);
+    // 失败后正常同步仍可恢复。
+    await expect(requestUsageSync()).resolves.toMatchObject({ changed: false });
+  }, 60_000);
 });

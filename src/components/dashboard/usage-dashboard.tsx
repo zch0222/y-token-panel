@@ -59,6 +59,7 @@ import {
   type BillingFilter,
   type CreditBreakdownItem,
   type HarnessFilter,
+  type HarnessId,
   type MetricKey,
   type RangeKey,
   type UsageQueryFilters,
@@ -268,10 +269,16 @@ async function fetchUsageStats(filters: UsageQueryFilters): Promise<UsageStatsVi
   return (await response.json()) as UsageStatsView;
 }
 
-async function syncUsageResult(): Promise<UsageSyncResult> {
+async function syncUsageResult(harness?: HarnessId): Promise<UsageSyncResult> {
   const response = await fetch("/api/usage/sync", {
     method: "POST",
     cache: "no-store",
+    ...(harness === undefined
+      ? {}
+      : {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harness }),
+        }),
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as
@@ -299,6 +306,7 @@ export function UsageDashboard() {
     stats: statsSection,
     syncing,
     refreshing,
+    harnessSyncing,
     lastSyncedAt,
     syncError,
   } = dashboardState;
@@ -638,6 +646,21 @@ export function UsageDashboard() {
                 className="h-9 text-xs text-muted-foreground"
               >
                 <FilterX /> 清除筛选
+              </Button>
+            )}
+            {harness !== "all" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={`仅同步 ${getHarnessLabel(harness)}`}
+                title={`只重新扫描 ${getHarnessLabel(harness)} 的本地会话，其他 Harness 数据保持不变`}
+                disabled={harnessSyncing.includes(harness)}
+                onClick={() => void controller.refreshHarness(harness)}
+                className="h-9 bg-card px-3 text-xs"
+              >
+                <RefreshCw className={cn(harnessSyncing.includes(harness) && "animate-spin")} />
+                {harnessSyncing.includes(harness) ? "正在同步" : `仅同步 ${getHarnessLabel(harness)}`}
               </Button>
             )}
             <div className="ml-auto hidden items-center gap-1.5 text-[11px] text-muted-foreground xl:flex">

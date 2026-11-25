@@ -575,4 +575,96 @@ describe("UsageDashboardController", () => {
     expect(fetchStats).toHaveBeenCalledTimes(3);
     controller.stop();
   });
+
+  it("refreshHarness 只同步指定来源，revision 变化时重查视图", async () => {
+    const env = createEnvironment();
+    let revision = 1;
+    const fetchView = vi.fn(async () => viewPayload(revision));
+    const fetchRecords = vi.fn(async () => recordsPayload(0));
+    const syncUsage = vi.fn(async () => syncPayload(revision));
+    const controller = new UsageDashboardController({
+      fetchView,
+      fetchRecords,
+      syncUsage,
+      environment: env.environment,
+      minuteInvalidationMs: Number.MAX_SAFE_INTEGER,
+    });
+    controller.start();
+    await flushPromises();
+    // 初始全量同步不带 harness。
+    expect(syncUsage).toHaveBeenLastCalledWith();
+    expect(controller.getState().harnessSyncing).toEqual([]);
+    const viewCallsBefore = fetchView.mock.calls.length;
+
+    // 单来源同步推进 revision：与全量同步同款重查收尾。
+    revision = 2;
+    await controller.refreshHarness("claude");
+    await flushPromises();
+    expect(syncUsage).toHaveBeenLastCalledWith("claude");
+    expect(fetchView.mock.calls.length).toBe(viewCallsBefore + 1);
+    expect(controller.getState().view.data?.revision).toBe(2);
+    expect(controller.getState().harnessSyncing).toEqual([]);
+    // 全量同步循环的 syncing 不受单来源同步影响。
+    expect(controller.getState().syncing).toBe(false);
+    controller.stop();
+  });
+
+  it("refreshHarness 同步期间标记 harnessSyncing，重复触发复用在途请求", async () => {
+    const env = createEnvironment();
+    const pending = deferred<UsageSyncResult>();
+    const syncUsage = vi.fn(async (harness?: string) =>
+      harness === undefined ? syncPayload(1) : pending.promise,
+    );
+    const controller = new UsageDashboardController({
+      fetchView: async () => viewPayload(1),
+      fetchRecords: async () => recordsPayload(0),
+      syncUsage,
+      environment: env.environment,
+      minuteInvalidationMs: Number.MAX_SAFE_INTEGER,
+    });
+    controller.start();
+    await flushPromises();
+
+    const first = controller.refreshHarness("codex");
+    const second = controller.refreshHarness("codex");
+    expect(second).toBe(first);
+    expect(controller.getState().harnessSyncing).toEqual(["codex"]);
+    expect(syncUsage.mock.calls.filter((call) => call[0] === "codex")).toHaveLength(1);
+
+    pending.resolve(syncPayload(1));
+    await first;
+    await flushPromises();
+    expect(controller.getState().harnessSyncing).toEqual([]);
+
+    // 结束后再次触发会发起新请求。
+    const again = controller.refreshHarness("codex");
+    expect(again).not.toBe(first);
+    expect(syncUsage.mock.calls.filter((call) => call[0] === "codex")).toHaveLength(2);
+    controller.stop();
+    await again.catch(() => undefined);
+  });
+
+  it("refreshHarness 失败时置 syncError 并清空 harnessSyncing", async () => {
+    const env = createEnvironment();
+    const syncUsage = vi.fn(async (harness?: string) => {
+      if (harness === undefined) return syncPayload(1);
+      throw new Error("claude scan broken");
+    });
+    const controller = new UsageDashboardController({
+      fetchView: async () => viewPayload(1),
+      fetchRecords: async () => recordsPayload(0),
+      syncUsage,
+      environment: env.environment,
+      minuteInvalidationMs: Number.MAX_SAFE_INTEGER,
+    });
+    controller.start();
+    await flushPromises();
+    expect(controller.getState().syncError).toBeNull();
+
+    await controller.refreshHarness("claude");
+    await flushPromises();
+    expect(controller.getState().harnessSyncing).toEqual([]);
+    expect(controller.getState().syncError).toBe("claude scan broken");
+    controller.stop();
+  });
 });

@@ -25,13 +25,17 @@ import type {
   UsageIncrementalCommit,
   UsageStore,
 } from "@/lib/usage-store";
-import type { IncrementalUsageResult } from "@/lib/incremental-core";
+import { canonicalRecord, type IncrementalUsageResult } from "@/lib/incremental-core";
 
 export type UsageReader = () => Promise<HarnessUsage>;
 
 function combineUsageResults(results: HarnessUsage[]): UsageResponse {
   const usage: UsageResponse = {
-    records: results.flatMap((result) => result.records),
+    // 统一规范化键序：devin 等全量 reader 的记录键序与 DB 读回不一致
+    // （firstTokenMs/estimatedDurationMs 颠倒），合并扫描的记录一半来自
+    // parser、一半来自 DB；不规范化会让全量扫描与单来源合并扫描对同样数据
+    // 产生不同内容哈希，两条流水线交替时 revision 来回抖动（假 changed）。
+    records: results.flatMap((result) => result.records.map(canonicalRecord)),
     sources: results.map(({ records, ...source }) => ({
       ...source,
       recordCount: records.length,
@@ -40,7 +44,10 @@ function combineUsageResults(results: HarnessUsage[]): UsageResponse {
     skippedFiles: results.reduce((sum, result) => sum + result.skippedFiles, 0),
     syncedAt: Date.now(),
   };
-  usage.records.sort((a, b) => b.timestamp - a.timestamp);
+  // 全序排序（时间倒序 + id 兜底）：devin/zcode 全量 reader 的发射顺序与 DB
+  // 读回的严格顺序不同，只有全序排序才能保证两条流水线对同样数据产生逐字节
+  // 一致的数组顺序。
+  usage.records.sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id));
   return usage;
 }
 
@@ -87,9 +94,9 @@ const incrementalReaders: Array<{
  * 单个来源失败时保留该来源的最后成功数据（M5 错误隔离）：失败来源的记录与
  * 来源摘要沿用上次成功提交的归一化库，其余来源照常更新；失败来源的增量游标
  * 因事务缺失而保持不动，下一轮自动重试。全部来源都失败时整体失败，由调用
- * 方保留旧快照。
+ * 方保留旧快照。单来源同步也复用这份已提交数据合并其余未扫描来源。
  */
-function staleUsageForFailedSource(
+function storedUsageForSource(
   store: UsageStore,
   harness: HarnessId,
 ): HarnessUsage | undefined {
@@ -105,10 +112,53 @@ function staleUsageForFailedSource(
   };
 }
 
-export async function scanUsageForStorage(store: UsageStore): Promise<{
+/**
+ * 单来源同步（手动按 Harness 刷新）：只扫描目标来源，其余来源原样沿用已提交
+ * 的归一化记录与来源摘要，合并结果与全量扫描走同一提交流程。目标来源扫描
+ * 失败即整体抛出——单来源同步没有其他来源需要隔离，错误应直接反馈给手动
+ * 触发者，最后成功快照保持不变。
+ */
+async function scanSingleHarnessForStorage(
+  store: UsageStore,
+  harness: HarnessId,
+): Promise<{
   usage: UsageResponse;
   incrementals: UsageIncrementalCommit[];
 }> {
+  const entry = usageReaders.find((candidate) => candidate.harness === harness);
+  if (!entry) throw new Error(`未知用量来源: ${harness}`);
+  const incremental = incrementalReaders.find((candidate) => candidate.harness === harness)?.incremental;
+
+  const transactions: UsageIncrementalCommit[] = [];
+  let scanned: HarnessUsage;
+  if (incremental) {
+    const result = await incremental(store);
+    transactions.push(result.transaction);
+    scanned = result.usage;
+  } else {
+    scanned = await entry.read();
+  }
+
+  const results: HarnessUsage[] = [];
+  for (const { harness: candidate } of usageReaders) {
+    if (candidate === harness) {
+      results.push(scanned);
+      continue;
+    }
+    const stored = storedUsageForSource(store, candidate);
+    if (stored) results.push(stored);
+  }
+  return { usage: combineUsageResults(results), incrementals: transactions };
+}
+
+export async function scanUsageForStorage(
+  store: UsageStore,
+  onlyHarness?: HarnessId,
+): Promise<{
+  usage: UsageResponse;
+  incrementals: UsageIncrementalCommit[];
+}> {
+  if (onlyHarness !== undefined) return scanSingleHarnessForStorage(store, onlyHarness);
   const incrementalByHarness = new Map(
     incrementalReaders.map(({ harness, incremental }) => [harness, incremental]),
   );
@@ -138,7 +188,7 @@ export async function scanUsageForStorage(store: UsageStore): Promise<{
     }
     firstError ??= outcome.reason;
     // 失败来源回退到最后成功数据；从未成功过的来源按不可用略过。
-    const stale = staleUsageForFailedSource(store, harness);
+    const stale = storedUsageForSource(store, harness);
     if (stale) results.push(stale);
     console.error(
       `[usage] 来源 ${harness} 本轮同步失败，已保留最后成功数据`,
