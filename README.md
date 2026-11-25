@@ -155,7 +155,7 @@ Devin（Devin Desktop / Devin CLI）数据源是其本地会话库（SQLite，�
 - 计算沿用 cc-switch 口径：输入 / 输出 / 缓存读 / 缓存写分别乘对应单价后求和。对“输入包含缓存”的来源，可计费输入会先扣除缓存读写；Claude 等“新鲜输入”来源不重复扣除。
 - 模型 ID 先精确匹配，再按 cc-switch 的归一化规则处理大小写、供应商命名空间、`:free` / variant、`@`、日期与 Bedrock 版本后缀，并进行有限前缀匹配。
 - 找不到价格的请求保留为未定价，不计入成本总额；价格新增、更新或 models.dev 同步后只回填这些未定价历史记录，已有非空成本不因价格修改而重算。
-- 「模型价格」页面可搜索、新增、编辑、删除价格，并可手动同步 models.dev。自动同步默认开启，但最多 6 小时一次；同步会过滤音频、图片、视频、embedding、moderation、TTS 和 deprecated 等非文本模型。
+- 「模型价格」页面可搜索、新增、编辑、删除价格，并可手动同步 models.dev。自动同步默认开启，但最多 6 小时一次；同步会过滤音频、图片、视频、embedding、moderation、TTS 和 deprecated 等非文本模型。统计面板的指标切换也支持“价格”，日/月热力、柱状图与模型排名会改按估算成本排序和着色。
 - 相关接口：`GET /api/pricing` 读取目录，`POST /api/pricing` 新增或更新，`DELETE /api/pricing?modelId=…` 删除；`GET/PATCH/POST /api/pricing/models-dev` 分别读取配置、修改开关和触发同步。
 
 成本是本地按公开/用户维护单价得到的**估算美元成本**，不是供应商账单，也不替代各 Harness 原始 Credits。价格表没有供应商维度、套餐折扣、上下文分档、高峰/低谷、多模态或账号优惠等完整计费规则；同一模型经不同中转站的实际价格可能不同。

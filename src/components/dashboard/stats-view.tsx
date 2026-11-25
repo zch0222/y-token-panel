@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { CreditBreakdown } from "@/components/dashboard/credit-breakdown";
 import { Button } from "@/components/ui/button";
+import { formatUsdCost } from "@/lib/model-pricing";
 import { cn } from "@/lib/utils";
 import {
   formatCompact,
@@ -100,7 +101,7 @@ function groupBy<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
 }
 
 type StatsMode = "day" | "month" | "all";
-type StatsMetric = "tokens" | "requests";
+type StatsMetric = "tokens" | "requests" | "cost";
 
 const modeOptions: Array<{ value: StatsMode; label: string }> = [
   { value: "day", label: "按日" },
@@ -110,13 +111,25 @@ const modeOptions: Array<{ value: StatsMode; label: string }> = [
 const metricOptions: Array<{ value: StatsMetric; label: string }> = [
   { value: "tokens", label: "Tokens" },
   { value: "requests", label: "请求数" },
+  { value: "cost", label: "价格" },
 ];
-const metricLabels: Record<StatsMetric, string> = { tokens: "Tokens", requests: "请求数" };
+const metricLabels: Record<StatsMetric, string> = { tokens: "Tokens", requests: "请求数", cost: "价格" };
 
 /** 热力指标值：Tokens 模式下没有 Token 上报的桶回退到请求数，避免热力整片空白。 */
 function metricValue(bucket: UsageBucketStat, metric: StatsMetric): number {
   if (metric === "requests") return bucket.requests;
+  if (metric === "cost") return bucket.costUsd;
   return bucket.hasTokens ? bucket.tokens : bucket.requests;
+}
+
+/** 热力格与图形标签的紧凑值；价格保留美元符号，Token/请求数沿用紧凑计数。 */
+function formatMetricValue(metric: StatsMetric, value: number): string {
+  if (metric === "cost") {
+    if (value <= 0) return "$0";
+    if (value >= 1000) return `$${formatCompact(value)}`;
+    return formatUsdCost(value, true);
+  }
+  return formatCompact(value);
 }
 
 const HEAT_CLASSES = [
@@ -249,13 +262,19 @@ function StatCell({
 /** 选中期（日/月）的汇总条；与用量概览指标卡同一口径。 */
 function SummaryStrip({ bucket }: { bucket: UsageBucketStat }) {
   return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-border/70 px-5 py-4 sm:grid-cols-5 sm:px-6">
+    <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-border/70 px-5 py-4 sm:grid-cols-6 sm:px-6">
       <StatCell label="请求数">{bucket.requests.toLocaleString("zh-CN")}</StatCell>
       <StatCell
         label="Tokens"
         detail={bucket.hasTokens ? bucket.tokens.toLocaleString("zh-CN") : "未上报"}
       >
         {bucket.hasTokens ? formatCompact(bucket.tokens) : "—"}
+      </StatCell>
+      <StatCell
+        label="价格"
+        detail={bucket.unpricedRequests > 0 ? `${bucket.unpricedRequests} 条未定价` : "本地估算"}
+      >
+        {formatUsdCost(bucket.costUsd, bucket.hasCost)}
       </StatCell>
       <StatCell
         label="计费 Credits"
@@ -287,6 +306,9 @@ interface ModelAggregate {
   cacheReadTokens: number;
   credits: number;
   hasCredit: boolean;
+  costUsd: number;
+  hasCost: boolean;
+  unpricedRequests: number;
 }
 
 /** 把 月×模型 行按模型求和成全历史排名；provider 取字典序最小值（与聚合层一致）。 */
@@ -304,6 +326,9 @@ function aggregateModels(rows: UsageMonthModelStat[]): ModelAggregate[] {
       cacheReadTokens: 0,
       credits: 0,
       hasCredit: false,
+      costUsd: 0,
+      hasCost: false,
+      unpricedRequests: 0,
     };
     current.requests += row.requests;
     current.tokens += row.tokens;
@@ -313,6 +338,9 @@ function aggregateModels(rows: UsageMonthModelStat[]): ModelAggregate[] {
     current.cacheReadTokens += row.cacheReadTokens;
     current.credits += row.credits;
     current.hasCredit ||= row.hasCredit;
+    current.costUsd += row.costUsd;
+    current.hasCost ||= row.hasCost;
+    current.unpricedRequests += row.unpricedRequests;
     if (row.provider < current.provider) current.provider = row.provider;
     map.set(row.model, current);
   }
@@ -325,9 +353,14 @@ const MODEL_CHART_LIMIT = 12;
 function sortByMetric(rows: ModelAggregate[], metric: StatsMetric): ModelAggregate[] {
   return [...rows].sort(
     (a, b) =>
-      (metric === "tokens" ? b.tokens - a.tokens : b.requests - a.requests) ||
+      (metric === "tokens"
+        ? b.tokens - a.tokens
+        : metric === "cost"
+          ? b.costUsd - a.costUsd
+          : b.requests - a.requests) ||
       b.requests - a.requests ||
       b.tokens - a.tokens ||
+      b.costUsd - a.costUsd ||
       a.model.localeCompare(b.model),
   );
 }
@@ -352,6 +385,10 @@ function ModelTooltip({
     },
     { label: "请求数", text: `${row.requests.toLocaleString("zh-CN")} 次` },
     { label: "输入 / 输出", text: `${formatCompact(row.inputTokens)} / ${formatCompact(row.outputTokens)}` },
+    {
+      label: "价格",
+      text: `${formatUsdCost(row.costUsd, row.hasCost)}${row.unpricedRequests > 0 ? " *" : ""}`,
+    },
     ...(row.hasCredit
       ? [{ label: "计费 Credits", text: formatCredits(row.credits) }]
       : []),
@@ -385,7 +422,14 @@ function ModelBars({
   const chartRows = rows.slice(0, MODEL_CHART_LIMIT).map((row) => ({
     ...row,
     // 指标轴保持一致口径：没有 Token 上报的模型在 Tokens 模式下为空柱，由 tooltip 解释。
-    value: metric === "tokens" ? (row.hasTokens ? row.tokens : 0) : row.requests,
+    value:
+      metric === "tokens"
+        ? row.hasTokens
+          ? row.tokens
+          : 0
+        : metric === "cost"
+          ? row.costUsd
+          : row.requests,
   }));
   return (
     <ResponsiveContainer
@@ -425,7 +469,7 @@ function ModelBars({
             position="right"
             fontSize={11}
             fill="var(--muted-foreground)"
-            formatter={(value) => formatCompact(Number(value))}
+            formatter={(value) => formatMetricValue(metric, Number(value))}
           />
         </Bar>
       </BarChart>
@@ -443,6 +487,8 @@ interface DayChartPoint {
   hasTokens: boolean;
   credits: number;
   hasCredit: boolean;
+  costUsd: number;
+  hasCost: boolean;
   value: number;
 }
 
@@ -464,6 +510,7 @@ function DayTooltip({
           text: point.hasTokens ? point.tokens.toLocaleString("zh-CN") : "未上报",
         },
         { label: "请求数", text: `${point.requests.toLocaleString("zh-CN")} 次` },
+        { label: "价格", text: formatUsdCost(point.costUsd, point.hasCost) },
         ...(point.hasCredit
           ? [{ label: "计费 Credits", text: formatCredits(point.credits) }]
           : []),
@@ -480,9 +527,11 @@ function DayTooltip({
 /** 竖向柱状图（月内每日 / 全部月度共用）；data 已带 value 字段。 */
 function UsageBars({
   data,
+  metric,
   onPickDay,
 }: {
   data: DayChartPoint[];
+  metric: StatsMetric;
   onPickDay?: (day: string) => void;
 }) {
   return (
@@ -502,7 +551,7 @@ function UsageBars({
           tickLine={false}
           fontSize={11}
           width={48}
-          tickFormatter={formatCompact}
+          tickFormatter={(value) => formatMetricValue(metric, Number(value))}
           tickMargin={8}
         />
         <Tooltip content={<DayTooltip />} cursor={{ fill: "var(--muted)", opacity: 0.35 }} />
@@ -651,7 +700,7 @@ function DayCell({
           ? `${day} · 无记录`
           : `${day} · ${bucket.requests} 次请求${
               bucket.hasTokens ? ` · ${bucket.tokens.toLocaleString("zh-CN")} Tokens` : ""
-            }${bucket.hasCredit ? ` · ${formatCredits(bucket.credits)} Credits` : ""}`
+            }${bucket.hasCost ? ` · ${formatUsdCost(bucket.costUsd, true)}` : ""}${bucket.hasCredit ? ` · ${formatCredits(bucket.credits)} Credits` : ""}`
       }
       onClick={() => onSelect(day)}
       className={cn(
@@ -672,7 +721,7 @@ function DayCell({
             level >= 3 ? "text-primary-foreground/85" : "text-muted-foreground",
           )}
         >
-          {formatCompact(value)}
+          {formatMetricValue(metric, value)}
         </span>
       )}
     </button>
@@ -762,7 +811,7 @@ function MonthCalendar({
                         bucket.hasTokens
                           ? ` · ${bucket.tokens.toLocaleString("zh-CN")} Tokens`
                           : ""
-                      }${bucket.hasCredit ? ` · ${formatCredits(bucket.credits)} Credits` : ""}`
+                      }${bucket.hasCost ? ` · ${formatUsdCost(bucket.costUsd, true)}` : ""}${bucket.hasCredit ? ` · ${formatCredits(bucket.credits)} Credits` : ""}`
                 }
                 onClick={() => onSelectMonth(key)}
                 className={cn(
@@ -786,7 +835,7 @@ function MonthCalendar({
                       level >= 3 ? "text-primary-foreground/85" : "text-muted-foreground",
                     )}
                   >
-                    {formatCompact(value)}
+                    {formatMetricValue(metric, value)}
                   </span>
                 )}
               </button>
@@ -880,6 +929,8 @@ function MonthDetail({
         hasTokens: row?.hasTokens ?? false,
         credits: row?.credits ?? 0,
         hasCredit: row?.hasCredit ?? false,
+        costUsd: row?.costUsd ?? 0,
+        hasCost: row?.hasCost ?? false,
         value: row === undefined ? 0 : metricValue(row, metric),
       };
     });
@@ -901,7 +952,7 @@ function MonthDetail({
           <>
             <SummaryStrip bucket={bucket} />
             <div className="px-4 pb-4 pt-3 sm:px-5">
-              <UsageBars data={chartData} onPickDay={onPickDay} />
+              <UsageBars data={chartData} metric={metric} onPickDay={onPickDay} />
             </div>
           </>
         )}
@@ -948,6 +999,8 @@ function AllOverview({
       hasTokens: row?.hasTokens ?? false,
       credits: row?.credits ?? 0,
       hasCredit: row?.hasCredit ?? false,
+      costUsd: row?.costUsd ?? 0,
+      hasCost: row?.hasCost ?? false,
       value: row === undefined ? 0 : metricValue(row, metric),
     };
   });
@@ -961,7 +1014,7 @@ function AllOverview({
           {months.length === 0 ? (
             <EmptyNotice text="当前筛选下无用量记录" />
           ) : (
-            <UsageBars data={chartData} />
+            <UsageBars data={chartData} metric={metric} />
           )}
         </div>
       </StatsPanel>
@@ -1026,8 +1079,16 @@ export function StatsView({ stats }: StatsViewProps) {
   const hasAnyTokens =
     (stats?.daily.some((bucket) => bucket.hasTokens) ?? false) ||
     (stats?.monthlyModels.some((row) => row.hasTokens) ?? false);
-  // 全库都没有 Token 上报时统一退到请求数口径，避免空图表与空热力。
-  const effectiveMetric = hasAnyTokens ? metric : "requests";
+  const hasAnyCost =
+    (stats?.daily.some((bucket) => bucket.hasCost) ?? false) ||
+    (stats?.monthlyModels.some((row) => row.hasCost) ?? false);
+  // 全库都没有所选事实数据时统一退到请求数口径，避免空图表与空热力。
+  const effectiveMetric =
+    metric === "tokens" && !hasAnyTokens
+      ? "requests"
+      : metric === "cost" && !hasAnyCost
+        ? "requests"
+        : metric;
 
   const dayRows = sortByMetric(dayModelMap.get(selectedDay) ?? [], effectiveMetric);
   const monthRows = sortByMetric(monthModelMap.get(selectedMonth) ?? [], effectiveMetric);
