@@ -49,6 +49,9 @@ interface SummaryRow {
   unbilled_credits: number;
   tokens: number;
   has_token_usage: number;
+  cost_usd: number;
+  has_cost: number;
+  unpriced_requests: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -63,6 +66,7 @@ interface TrendRow {
   tokens: number;
   requests: number;
   credits: number;
+  cost_usd: number;
   unbilled_credits: number;
   input_tokens: number;
   cache_read_tokens: number;
@@ -83,6 +87,7 @@ export interface RecordRow {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  cache_creation_1h_tokens: number;
   total_tokens: number;
   input_token_semantics: "fresh" | "total";
   has_token_usage: number;
@@ -93,11 +98,17 @@ export interface RecordRow {
   context_usage_ratio: number | null;
   estimated_duration_ms: number | null;
   first_token_ms: number | null;
+  pricing_model: string | null;
+  input_cost_usd: number | null;
+  output_cost_usd: number | null;
+  cache_read_cost_usd: number | null;
+  cache_creation_cost_usd: number | null;
+  total_cost_usd: number | null;
   status: "success" | "error";
 }
 
 /** 供分页、详情与 readNormalizedRecords 共用的行映射；可选字段保持 undefined 语义。 */
-export function mapRecordRow(row: RecordRow): UsageRecord {
+export function mapRecordRow(row: RecordRow, includeCost = false): UsageRecord {
   return {
     id: row.record_id,
     requestId: row.request_id,
@@ -111,6 +122,9 @@ export function mapRecordRow(row: RecordRow): UsageRecord {
     outputTokens: row.output_tokens,
     cacheReadTokens: row.cache_read_tokens,
     cacheCreationTokens: row.cache_creation_tokens,
+    ...(row.cache_creation_1h_tokens === 0
+      ? {}
+      : { cacheCreation1hTokens: row.cache_creation_1h_tokens }),
     totalTokens: row.total_tokens,
     inputTokenSemantics: row.input_token_semantics,
     hasTokenUsage: row.has_token_usage === 1,
@@ -125,6 +139,13 @@ export function mapRecordRow(row: RecordRow): UsageRecord {
       ? {}
       : { estimatedDurationMs: row.estimated_duration_ms }),
     ...(row.first_token_ms === null ? {} : { firstTokenMs: row.first_token_ms }),
+    ...(includeCost && row.pricing_model !== null ? { pricingModel: row.pricing_model } : {}),
+    ...(includeCost && row.input_cost_usd !== null ? { inputCostUsd: row.input_cost_usd } : {}),
+    ...(includeCost && row.output_cost_usd !== null ? { outputCostUsd: row.output_cost_usd } : {}),
+    ...(includeCost && row.cache_read_cost_usd !== null ? { cacheReadCostUsd: row.cache_read_cost_usd } : {}),
+    ...(includeCost && row.cache_creation_cost_usd !== null ? { cacheCreationCostUsd: row.cache_creation_cost_usd } : {}),
+    ...(includeCost && row.total_cost_usd !== null ? { totalCostUsd: row.total_cost_usd } : {}),
+    ...(includeCost && row.total_cost_usd !== null ? { hasCost: true } : {}),
     status: row.status,
   };
 }
@@ -186,6 +207,9 @@ const SUMMARY_SQL = `
   COALESCE(SUM(CASE WHEN billable = 0 THEN COALESCE(reported_credits, 0) ELSE 0 END), 0) AS unbilled_credits,
   COALESCE(SUM(total_tokens), 0) AS tokens,
   COALESCE(MAX(has_token_usage), 0) AS has_token_usage,
+  COALESCE(SUM(total_cost_usd), 0) AS cost_usd,
+  COALESCE(MAX(CASE WHEN total_cost_usd IS NULL THEN 0 ELSE 1 END), 0) AS has_cost,
+  COALESCE(SUM(CASE WHEN has_token_usage = 1 AND total_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
   COALESCE(SUM(input_tokens), 0) AS input_tokens,
   COALESCE(SUM(output_tokens), 0) AS output_tokens,
   COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -256,6 +280,9 @@ function summaryFromRow(
     unbilledCredits: row.unbilled_credits,
     tokens: row.tokens,
     hasTokens: row.has_token_usage === 1,
+    costUsd: row.cost_usd,
+    hasCost: row.has_cost === 1,
+    unpricedRequests: row.unpriced_requests,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     cacheReadTokens: row.cache_read_tokens,
@@ -364,6 +391,7 @@ function queryTrend(
         COALESCE(SUM(total_tokens), 0) AS tokens,
         COUNT(*) AS requests,
         COALESCE(SUM(credits), 0) AS credits,
+        COALESCE(SUM(total_cost_usd), 0) AS cost_usd,
         COALESCE(SUM(CASE WHEN billable = 0 THEN COALESCE(reported_credits, 0) ELSE 0 END), 0) AS unbilled_credits,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -383,6 +411,7 @@ function queryTrend(
     point.tokens += row.tokens;
     point.requests += row.requests;
     point.credits += row.credits;
+    point.cost += row.cost_usd;
     point.unbilledCredits += row.unbilled_credits;
     point.inputTokens += row.input_tokens;
     point.cacheReadTokens += row.cache_read_tokens;
@@ -527,6 +556,9 @@ function bucketStatsFromRows(
       unbilledCredits: row.unbilled_credits,
       tokens: row.tokens,
       hasTokens: row.has_token_usage === 1,
+      costUsd: row.cost_usd,
+      hasCost: row.has_cost === 1,
+      unpricedRequests: row.unpriced_requests,
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
       cacheReadTokens: row.cache_read_tokens,
@@ -571,6 +603,9 @@ interface ModelBucketRow {
   requests: number;
   tokens: number;
   has_token_usage: number;
+  cost_usd: number;
+  has_cost: number;
+  unpriced_requests: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -593,6 +628,9 @@ function queryModelBuckets(
         COUNT(*) AS requests,
         COALESCE(SUM(total_tokens), 0) AS tokens,
         COALESCE(MAX(has_token_usage), 0) AS has_token_usage,
+        COALESCE(SUM(total_cost_usd), 0) AS cost_usd,
+        COALESCE(MAX(CASE WHEN total_cost_usd IS NULL THEN 0 ELSE 1 END), 0) AS has_cost,
+        COALESCE(SUM(CASE WHEN has_token_usage = 1 AND total_cost_usd IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_requests,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -612,6 +650,9 @@ function modelBucketStat(row: ModelBucketRow) {
     requests: row.requests,
     tokens: row.tokens,
     hasTokens: row.has_token_usage === 1,
+    costUsd: row.cost_usd,
+    hasCost: row.has_cost === 1,
+    unpricedRequests: row.unpriced_requests,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     cacheReadTokens: row.cache_read_tokens,
@@ -724,7 +765,7 @@ export function buildRecordsPage(
     total,
     page: currentPage,
     pageSize,
-    records: rows.map(mapRecordRow),
+    records: rows.map((row) => mapRecordRow(row, true)),
   };
 }
 
@@ -737,7 +778,7 @@ export function findUsageRecord(
   const row = db
     .prepare("SELECT * FROM usage_records WHERE harness = ? AND record_id = ?")
     .get(harness, recordId) as unknown as RecordRow | undefined;
-  return row === undefined ? null : mapRecordRow(row);
+  return row === undefined ? null : mapRecordRow(row, true);
 }
 
 /** CSV 导出用：同筛选的全部记录，排序与分页一致。 */
@@ -752,7 +793,7 @@ export function findAllUsageRecords(
       `SELECT * FROM usage_records WHERE ${where} ORDER BY timestamp_ms DESC, id ASC`,
     )
     .all(...params) as unknown as RecordRow[];
-  return rows.map(mapRecordRow);
+  return rows.map((row) => mapRecordRow(row, true));
 }
 
 export interface UsageQueryParams {

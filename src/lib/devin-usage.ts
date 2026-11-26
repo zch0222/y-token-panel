@@ -129,6 +129,7 @@ export function parseDevinMessageRow(row: DevinMessageRow): UsageRecord | null {
   const outputTokens = clampDevinInteger(metrics.output_tokens);
   const cacheReadTokens = clampDevinInteger(metrics.cache_read_tokens);
   const cacheCreationTokens = clampDevinInteger(metrics.cache_creation_tokens);
+  const cacheCreation1hTokens = clampDevinInteger(metrics.cache_creation_1h_tokens);
   // metrics 没有总量字段（num_tokens 只是输出量），总量按四项求和。
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
 
@@ -173,6 +174,7 @@ export function parseDevinMessageRow(row: DevinMessageRow): UsageRecord | null {
     outputTokens,
     cacheReadTokens,
     cacheCreationTokens,
+    ...(cacheCreation1hTokens === 0 ? {} : { cacheCreation1hTokens }),
     totalTokens,
     inputTokenSemantics: "fresh",
     hasTokenUsage: totalTokens > 0,

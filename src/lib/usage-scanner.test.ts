@@ -222,4 +222,85 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     devinReader.mockRejectedValue(new Error("devin down"));
     await expect(scanUsageForStorage(store)).rejects.toThrow("down");
   });
+
+  describe("单来源扫描（按 Harness 刷新）", () => {
+    it("只扫描目标来源，其余来源沿用已提交记录与摘要", async () => {
+      stubAllSources();
+      await commitRound(await scanUsageForStorage(store));
+      expect(store.readNormalizedRecords()).toHaveLength(11);
+
+      // 第二轮只同步 codex：新记录替换，其他来源保持第一轮数据。
+      incrementals.codex.mockImplementation(async () =>
+        incrementalOf("codex", [record("codex-2", "codex", 2000)]),
+      );
+      for (const harness of Object.keys(incrementals) as Array<keyof typeof incrementals>) {
+        incrementals[harness].mockClear();
+      }
+      zcodeReader.mockClear();
+      devinReader.mockClear();
+
+      const result = await scanUsageForStorage(store, "codex");
+
+      // 只有 codex 的增量 reader 被调用。
+      expect(incrementals.codex).toHaveBeenCalledTimes(1);
+      for (const harness of Object.keys(incrementals) as Array<keyof typeof incrementals>) {
+        if (harness === "codex") continue;
+        expect(incrementals[harness]).not.toHaveBeenCalled();
+      }
+      expect(zcodeReader).not.toHaveBeenCalled();
+      expect(devinReader).not.toHaveBeenCalled();
+
+      // 合并结果仍覆盖全部来源；其他来源数据与第一轮一致。
+      expect(result.usage.sources).toHaveLength(11);
+      await commitRound(result);
+      const records = store.readNormalizedRecords();
+      expect(records.filter((item) => item.harness === "codex").map((item) => item.id)).toEqual([
+        "codex-2",
+      ]);
+      expect(records.filter((item) => item.harness === "claude").map((item) => item.id)).toEqual([
+        "claude-1",
+      ]);
+      expect(result.incrementals).toHaveLength(1);
+      expect(result.incrementals[0]?.harness).toBe("codex");
+    });
+
+    it("无增量 reader 的来源走全量 reader", async () => {
+      stubAllSources();
+      await commitRound(await scanUsageForStorage(store));
+      zcodeReader.mockClear();
+      zcodeReader.mockImplementation(async () => ({
+        harness: "zcode",
+        records: [record("zcode-2", "zcode", 3000)],
+        scannedFiles: 1,
+        skippedFiles: 0,
+        source: "/tmp/zcode",
+        sourceAvailable: true,
+      }));
+
+      const result = await scanUsageForStorage(store, "zcode");
+      expect(zcodeReader).toHaveBeenCalledTimes(1);
+      expect(result.incrementals).toHaveLength(0);
+      await commitRound(result);
+      expect(
+        store.readNormalizedRecords("zcode").map((item) => item.id),
+      ).toEqual(["zcode-2"]);
+    });
+
+    it("目标来源扫描失败即整体抛出，不做 stale 回退", async () => {
+      stubAllSources();
+      await commitRound(await scanUsageForStorage(store));
+      incrementals.claude.mockRejectedValue(new Error("claude scan broken"));
+      await expect(scanUsageForStorage(store, "claude")).rejects.toThrow("claude scan broken");
+    });
+
+    it("其余来源从未成功过时仅提交目标来源", async () => {
+      incrementals.codex.mockImplementation(async () =>
+        incrementalOf("codex", [record("codex-1", "codex", 1000)]),
+      );
+      const result = await scanUsageForStorage(store, "codex");
+      expect(result.usage.sources).toHaveLength(1);
+      expect(result.usage.sources[0]?.harness).toBe("codex");
+      expect(result.usage.records.map((item) => item.id)).toEqual(["codex-1"]);
+    });
+  });
 });

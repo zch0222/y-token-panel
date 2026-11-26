@@ -4,6 +4,7 @@ import {
 } from "@/lib/usage-refresh-controller";
 import {
   DEFAULT_USAGE_FILTERS,
+  type HarnessId,
   type UsageQueryFilters,
   type UsageRecordsPage,
   type UsageStatsView,
@@ -29,6 +30,8 @@ export interface UsageDashboardState {
   syncing: boolean;
   /** 自动 / 回前台触发的后台同步进行中。 */
   refreshing: boolean;
+  /** 正在进行单来源同步的 Harness 列表（手动按 Harness 刷新）。 */
+  harnessSyncing: HarnessId[];
   lastSyncedAt: number | null;
   syncError: string | null;
 }
@@ -44,8 +47,8 @@ export interface UsageDashboardDeps {
   fetchRecords: (filters: UsageQueryFilters, page: number, pageSize: number) => Promise<UsageRecordsPage>;
   /** 统计面板聚合查询（/api/usage/stats）；缺省时统计段保持空。 */
   fetchStats?: (filters: UsageQueryFilters) => Promise<UsageStatsView>;
-  /** 触发一次本地同步；返回小结果（revision 等），不携带全部记录。 */
-  syncUsage: () => Promise<UsageSyncResult>;
+  /** 触发一次本地同步；返回小结果（revision 等），不携带全部记录。带 harness 时只同步该来源。 */
+  syncUsage: (harness?: HarnessId) => Promise<UsageSyncResult>;
   pageSize?: number;
   /** 滚动范围的分钟级失效间隔。 */
   minuteInvalidationMs?: number;
@@ -98,6 +101,7 @@ export class UsageDashboardController {
     stats: { data: null, loading: false, updating: false, error: null },
     syncing: false,
     refreshing: false,
+    harnessSyncing: [],
     lastSyncedAt: null,
     syncError: null,
   };
@@ -113,6 +117,8 @@ export class UsageDashboardController {
   /** 已见过的最高 revision；视图与同步结果共同推进。 */
   private seenRevision: number | null = null;
   private lastSyncData: UsageSyncResult | null = null;
+  /** 进行中的单来源同步；同一 Harness 重复触发时复用在途请求。 */
+  private readonly harnessSyncs = new Map<HarnessId, Promise<void>>();
   private lastViewFetchAt = 0;
   private active = false;
   private minuteTimer: unknown = null;
@@ -173,6 +179,33 @@ export class UsageDashboardController {
 
   /** 手动同步；重查逻辑与自动刷新一致（只在 revision 变化或存在查询错误时）。 */
   refresh = (): Promise<void> => this.syncLoop.refresh();
+
+  /**
+   * 手动只同步一个 Harness：绕开全量同步循环（自动 tick 不受影响），
+   * 同一 Harness 重复点击复用在途请求；完成后按 revision 变化重查，与
+   * 全量同步的收尾逻辑一致。
+   */
+  refreshHarness = (harness: HarnessId): Promise<void> => {
+    const existing = this.harnessSyncs.get(harness);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      this.patchState({ harnessSyncing: [...this.state.harnessSyncing, harness] });
+      try {
+        const result = await this.deps.syncUsage(harness);
+        this.applySyncResult(result);
+      } catch (error) {
+        this.patchState({ syncError: queryError(error) });
+      } finally {
+        this.harnessSyncs.delete(harness);
+        this.patchState({
+          harnessSyncing: this.state.harnessSyncing.filter((candidate) => candidate !== harness),
+        });
+      }
+    })();
+    this.harnessSyncs.set(harness, promise);
+    return promise;
+  };
 
   setFilters = (filters: UsageQueryFilters): void => {
     if (sameFilters(filters, this.filters)) return;
@@ -345,6 +378,11 @@ export class UsageDashboardController {
 
     const result = syncState.data;
     if (result === null || result === this.lastSyncData) return;
+    this.applySyncResult(result);
+  };
+
+  /** 同步完成后的统一收尾：登记 revision/时间，有变化或查询出错时重查聚合。 */
+  private applySyncResult(result: UsageSyncResult): void {
     this.lastSyncData = result;
     this.patchState({ lastSyncedAt: result.syncedAt });
 
@@ -363,7 +401,7 @@ export class UsageDashboardController {
       this.seenRevision = result.revision;
       this.refetchQueries();
     }
-  };
+  }
 
   /** 滚动范围（今天/昨天/近 N 天）按分钟失效：跨午夜后无需新数据也能纠正边界。 */
   private onMinuteTick = (): void => {

@@ -1,8 +1,13 @@
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
 import type { UsageResponse } from "@/lib/usage";
 import { UsageStore } from "@/lib/usage-store";
@@ -414,6 +419,49 @@ describe("整读型增量引擎（CodeBuddy / WorkBuddy / KCode）", () => {
       expect(relabeled.usage.records.every((record) => record.project === "renamed")).toBe(true);
       const finalBaseline = await readKcodeUsage();
       expect(relabeled.usage.records).toEqual(finalBaseline.records);
+    });
+
+    it("stat 后 wire 继续追加：游标不超过 stat 尺寸，新增内容下一轮补入", async () => {
+      const directory = await agentDir();
+      const wirePath = path.join(directory, "wire.jsonl");
+      const initial = kcodeSubStep("chatcmpl-1", BASE_MS).join("\n") + "\n";
+      await writeFile(wirePath, initial);
+      await sync(readKcodeUsageIncremental); // 冷导入建立游标
+
+      const step2 = kcodeSubStep("chatcmpl-2", BASE_MS + 10_000).join("\n") + "\n";
+      const step3 = kcodeSubStep("chatcmpl-3", BASE_MS + 20_000).join("\n") + "\n";
+      await appendFile(wirePath, step2); // discovery stat 将看到 initial+step2 尺寸
+
+      const actualStat = (
+        await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+      ).stat;
+      let injected = false;
+      vi.mocked(stat).mockImplementation(async (target) => {
+        const metadata = await actualStat(target);
+        // 模拟活跃 writer：发现文件尺寸后、正文读取前再追加一个 step。
+        if (!injected && target === wirePath) {
+          injected = true;
+          await appendFile(wirePath, step3);
+        }
+        return metadata;
+      });
+      try {
+        const raced = await sync(readKcodeUsageIncremental);
+        expect(raced.usage.records).toHaveLength(2); // 只解析 stat 尺寸内的内容
+      } finally {
+        vi.mocked(stat).mockImplementation(actualStat);
+      }
+      const cursor = store
+        .getSessionLogStates("kcode")
+        .find((state) => state.filePath === wirePath);
+      expect(cursor).toMatchObject({
+        fileSize: Buffer.byteLength(initial + step2),
+        cursorOffset: Buffer.byteLength(initial + step2),
+      });
+
+      const next = await sync(readKcodeUsageIncremental);
+      expect(next.usage.records).toHaveLength(3); // step3 下一轮补入
+      expect(next.usage.records).toEqual((await readKcodeUsage()).records);
     });
 
     it("projects.json 出现与消失都触发重建", async () => {

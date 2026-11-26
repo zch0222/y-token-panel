@@ -171,6 +171,11 @@ export function canonicalRecord(record: UsageRecord): UsageRecord {
     outputTokens: record.outputTokens,
     cacheReadTokens: record.cacheReadTokens,
     cacheCreationTokens: record.cacheCreationTokens,
+    // 与 DB 读回完全一致：0 值列在 mapRecordRow 中省略，键 Presence 也须对齐，
+    // 否则含显式 0 的 parser 记录在读回后键消失，内容哈希跨轮漂移。
+    ...(record.cacheCreation1hTokens === undefined || record.cacheCreation1hTokens === 0
+      ? {}
+      : { cacheCreation1hTokens: record.cacheCreation1hTokens }),
     totalTokens: record.totalTokens,
     inputTokenSemantics: record.inputTokenSemantics,
     hasTokenUsage: record.hasTokenUsage,

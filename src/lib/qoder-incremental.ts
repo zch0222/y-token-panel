@@ -1,5 +1,5 @@
 import "server-only";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   canonicalRecord,
@@ -237,7 +237,9 @@ async function importWholeFile(
   seen: Set<string>,
   stats: IncrementalStats,
 ): Promise<{ records: UsageRecord[]; cursor: UsageSessionLogState; cwds: { sessionId?: string; cwds?: string[] } }> {
-  const buffer = await readFile(file.filePath);
+  // 只读 stat 尺寸内的旧前缀：stat 后追加的字节下一轮续读，保证
+  // cursorOffset 不超过已记录的 fileSize。
+  const buffer = await readRange(file.filePath, 0, file.size);
   stats.bodyBytesRead += buffer.length;
   stats.fullFilesRead += 1;
   // 只提交到最后一个完整 LF 行；尾部半行留到下一轮补齐。
@@ -303,7 +305,8 @@ async function fullImport(discovery: Discovery, stats: IncrementalStats): Promis
   stats.fullFilesRead += discovery.stateFiles.length;
   for (const meta of discovery.stateFiles) {
     try {
-      const buffer = await readFile(meta.filePath);
+      // 与 jsonl 冷导入同口径：游标只覆盖 discovery stat 尺寸内的前缀。
+      const buffer = await readRange(meta.filePath, 0, meta.size);
       stats.bodyBytesRead += buffer.length;
       cursors.push(stateCursor(meta, buffer));
     } catch {
@@ -461,7 +464,7 @@ export async function readQoderUsageIncremental(store: UsageStore): Promise<Incr
       }
       try {
         // state.json 是整文件重写语义：变化即整读重算，无截断/同尺寸回退。
-        const buffer = await readFile(meta.filePath);
+        const buffer = await readRange(meta.filePath, 0, meta.size);
         stats.bodyBytesRead += buffer.length;
         stats.incrementalFilesRead += 1;
         const usage = parseQoderStateContent(

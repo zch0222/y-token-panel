@@ -1,13 +1,18 @@
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncrementalUsageResult } from "@/lib/incremental-core";
 import { readQoderUsage } from "@/lib/qoder";
 import { readQoderUsageIncremental } from "@/lib/qoder-incremental";
 import { encryptQoderStateSegment } from "@/lib/qoder-state";
 import type { UsageResponse } from "@/lib/usage";
 import { UsageStore } from "@/lib/usage-store";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 
 const BASE_MS = 1_794_000_000_000;
 
@@ -167,6 +172,57 @@ describe("Qoder 持久化字节游标增量导入", () => {
     await sync();
     expect(store.readNormalizedRecords("qoder")).toHaveLength(2);
     expect(store.getSnapshot()?.revision).toBe(2);
+  });
+
+  it("stat 后 jsonl 继续追加：游标不超过 stat 尺寸，新增内容下一轮补入", async () => {
+    const directory = await projectDir();
+    const filePath = path.join(directory, "session.jsonl");
+    const first = jsonl(usageLine(BASE_MS, 10, { requestId: "req-1" }));
+    await writeFile(filePath, first);
+    await sync();
+
+    const second = usageLine(BASE_MS + 1000, 20, { requestId: "req-2" }) + "\n";
+    const third = usageLine(BASE_MS + 2000, 30, { requestId: "req-3" }) + "\n";
+    await appendFile(filePath, second); // discovery stat 将看到 first+second 尺寸
+
+    const actualStat = (
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    ).stat;
+    let injected = false;
+    vi.mocked(stat).mockImplementation(async (target) => {
+      const metadata = await actualStat(target);
+      // 模拟活跃 writer：发现文件尺寸后、正文读取前再追加一行。
+      if (!injected && target === filePath) {
+        injected = true;
+        await appendFile(filePath, third);
+      }
+      return metadata;
+    });
+    try {
+      const raced = await sync();
+      expect(raced.usage.records.map((record) => record.id).sort()).toEqual([
+        "qoder:req-1",
+        "qoder:req-2",
+      ]);
+    } finally {
+      vi.mocked(stat).mockImplementation(actualStat);
+    }
+
+    const cursor = store
+      .getSessionLogStates("qoder")
+      .find((state) => state.filePath === filePath);
+    expect(cursor).toMatchObject({
+      fileSize: Buffer.byteLength(first + second),
+      cursorOffset: Buffer.byteLength(first + second),
+    });
+
+    const next = await sync();
+    expect(next.usage.records.map((record) => record.id).sort()).toEqual([
+      "qoder:req-1",
+      "qoder:req-2",
+      "qoder:req-3",
+    ]);
+    expect(next.usage.records).toEqual((await readQoderUsage()).records);
   });
 
   it("半行补全后不丢记录；无 request_id 行的 file:line 兜底 ID 跨轮稳定", async () => {
@@ -513,6 +569,72 @@ describe("Qoder state.json 加密聚合增量", () => {
     const second = await sync();
     expect(second.usage.records.map((r) => r.id)).toEqual(["qoder:req-1"]);
     expect(store.readNormalizedRecords("qoder").map((r) => r.id)).toEqual(["qoder:req-1"]);
+  });
+
+  it("stat 后 state.json 继续增长：游标不超过 stat 尺寸，下一轮补齐", async () => {
+    const workspace = path.join(root, "wk_dir");
+    const directory = path.join(process.env.QODER_DATA_DIR!, "p1");
+    await mkdir(path.join(directory, "session-a"), { recursive: true });
+    await writeFile(
+      path.join(directory, "session-a.jsonl"),
+      jsonl(plainLine(BASE_MS, workspace)),
+    );
+    const statePath = await writeStateFile(
+      "session-a",
+      statePayload({ input: 1000, output: 200, credits: 5.5 }),
+      workspace,
+    );
+    await sync();
+
+    await writeStateFile(
+      "session-a",
+      statePayload({
+        input: 2000,
+        output: 350,
+        credits: 9.25,
+        updatedAt: "2026-11-16T02:55:00.000Z",
+      }),
+      workspace,
+    );
+
+    const actualStat = (
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    ).stat;
+    const sizeBeforeRace = (await actualStat(statePath)).size;
+    let injected = false;
+    vi.mocked(stat).mockImplementation(async (target) => {
+      const metadata = await actualStat(target);
+      // state.json 是整文件 JSON；追加空白不改变内容语义，但足以制造
+      // “stat 后文件继续增长”的游标越界竞态。
+      if (!injected && target === statePath) {
+        injected = true;
+        await appendFile(statePath, " ");
+      }
+      return metadata;
+    });
+    try {
+      const raced = await sync();
+      expect(raced.usage.records.find((r) => r.id === "qoder:state:session-a")).toMatchObject({
+        inputTokens: 2000,
+        outputTokens: 350,
+      });
+    } finally {
+      vi.mocked(stat).mockImplementation(actualStat);
+    }
+
+    const cursor = store
+      .getSessionLogStates("qoder")
+      .find((state) => state.filePath === statePath);
+    expect(cursor).toMatchObject({
+      fileSize: sizeBeforeRace,
+      cursorOffset: sizeBeforeRace,
+    });
+
+    await sync();
+    const nextCursor = store
+      .getSessionLogStates("qoder")
+      .find((state) => state.filePath === statePath);
+    expect(nextCursor?.cursorOffset).toBe(sizeBeforeRace + 1);
   });
 
   it("state.json 损坏 / 解不开：计入 skipped，不影响 jsonl 记录", async () => {

@@ -125,7 +125,7 @@ macOS / Linux: ~/.local/share/devin/cli/sessions.db（跟随 XDG_DATA_HOME）
 
 ## 本地用量快照与同步
 
-用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v2，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
+用量数据默认持久化到项目目录的 `.data/usage.sqlite`（该目录已被 Git 忽略），可通过 **USAGE_DB_PATH** 指定其他数据库文件。数据库保存归一化用量、来源状态、去重账本、后续增量游标和最后一次成功快照，不保存完整会话正文。当前 schema 为 v5，启动时通过事务自动迁移；未知版本、错误 application_id 或不完整 schema 会明确报错，不会删除原库重建。
 
 - `GET /api/usage` 只读取最后成功快照，不扫描原始会话日志；数据库为空时明确返回 `snapshotAvailable: false`。这是 M6 前的 legacy 响应（仍含全部 records，约 12.7MB），保留用于兼容，页面默认不再调用。
 - `GET /api/usage/query?range=&harness=&project=&provider=&model=&billing=` 在 SQLite 中聚合返回汇总卡片、趋势、各维度分组、下拉 facet 与来源状态（默认筛选约 4–50KB），带 `X-Usage-Revision` 头；非法参数返回 400。
@@ -139,13 +139,27 @@ macOS / Linux: ~/.local/share/devin/cli/sessions.db（跟随 XDG_DATA_HOME）
 
 - Next 主进程只处理 SQLite 查询与小结果响应；原始日志发现、解压和解析在一次性 `worker_threads` 中执行。同一进程内所有标签页和手动/自动同步共享一个 in-flight worker。
 - `usage_records` 是聚合与分页的事实来源；`usage_sources` 保存各来源摘要，`usage_dedup` 持久化全局去重账本，`session_log_sync` 保存文件游标、尾部指纹与 parser state，`usage_snapshots` 保存兼容 API 的最后成功响应。
-- schema v2 迁移在事务中执行，并校验 `application_id`。未知高版本、非本应用数据库或不完整 schema 会报错，不会删库重建。
+- schema v5 迁移在事务中执行，并校验 `application_id`。未知高版本、非本应用数据库或不完整 schema 会报错，不会删库重建。
 - 未变化文件不读取正文；DSH/Claude/Qoder 按完整帧或完整行续读，CodeBuddy/WorkBuddy/KCode/Antigravity 对变化文件整读，Codex 额外持久化父时间线与 deferred 依赖状态。文件集变化、可检测的重写/截断或指纹失配会触发对应来源级重建。
 - 单个来源失败时保留其最后成功记录与游标，其他来源仍可提交；下一轮自动重试失败来源。整轮失败不会清空快照。
 - 需要强制重建单个来源时，先停止面板并备份数据库，再删除 `session_log_sync` 中该 Harness 的行，下次同步会全量重扫该来源。需要完全重置时，在停止面板后备份并移除 `.data/usage.sqlite` 及其 `-wal` / `-shm` 文件；不要直接删除无法识别版本的线上数据库来绕过迁移错误。
 - 全量 reader 保留用于冷导入、来源级重建和一致性基线；legacy `GET /api/usage` 仅为外部兼容保留，页面不再调用。
 
 应用只提取时间、项目、模型和用量元数据，不读取或返回对话正文。开发和生产启动脚本默认只监听 127.0.0.1；不要将本地用量接口直接暴露到公网。
+
+
+## 模型价格与估算成本
+
+「模型价格」视图参考 cc-switch 的本地估算计费方案。价格目录不是单一硬编码常量，而是三层来源合并：启动时写入内置 seed（当前约 236 条文本模型价格）、随后应用本机覆盖文件，并可从 models.dev 同步公开价格。覆盖文件默认是 `~/.y-token-panel/model-pricing.json`（可用 **Y_TOKEN_PANEL_DATA_DIR** 改变根目录），只保存用户/models.dev 显式覆盖与删除 tombstone，不会把完整内置表导出成用户配置。
+
+- 价格单位统一为 **美元 / 1M tokens**，字段为输入、输出、缓存读取、缓存写入四项；缓存写入价按 5 分钟 TTL 档保存，Claude 1 小时缓存写入按该档的 1.6 倍估算。
+- 计算沿用 cc-switch 口径：输入 / 输出 / 缓存读 / 缓存写分别乘对应单价后求和。对“输入包含缓存”的来源，可计费输入会先扣除缓存读写；Claude 等“新鲜输入”来源不重复扣除。
+- 模型 ID 先精确匹配，再按 cc-switch 的归一化规则处理大小写、供应商命名空间、`:free` / variant、`@`、日期与 Bedrock 版本后缀，并进行有限前缀匹配。
+- 找不到价格的请求保留为未定价，不计入成本总额；价格新增、更新或 models.dev 同步后只回填这些未定价历史记录，已有非空成本不因价格修改而重算。
+- 「模型价格」页面可搜索、新增、编辑、删除价格，并可手动同步 models.dev。自动同步默认开启，但最多 6 小时一次；同步会过滤音频、图片、视频、embedding、moderation、TTS 和 deprecated 等非文本模型。统计面板的指标切换也支持“价格”，日/月热力、柱状图与模型排名会改按估算成本排序和着色。
+- 相关接口：`GET /api/pricing` 读取目录，`POST /api/pricing` 新增或更新，`DELETE /api/pricing?modelId=…` 删除；`GET/PATCH/POST /api/pricing/models-dev` 分别读取配置、修改开关和触发同步。
+
+成本是本地按公开/用户维护单价得到的**估算美元成本**，不是供应商账单，也不替代各 Harness 原始 Credits。价格表没有供应商维度、套餐折扣、上下文分档、高峰/低谷、多模态或账号优惠等完整计费规则；同一模型经不同中转站的实际价格可能不同。
 
 ## 余额查询
 
@@ -182,6 +196,7 @@ Base URL 命中已知供应商时自动识别模板，其余按所选模板查�
 - **请求数**：包含用量字段的 CodeBuddy API 调用记录数。
 - **总 Tokens**：优先使用原始 total_tokens。CodeBuddy 的输入 Tokens 已包含缓存读取，因此不会再次累加缓存 Tokens。
 - **缓存命中率**：缓存读取 Tokens ÷ 输入 Tokens。
+- **估算成本**：按本地模型价格目录与 Token 用量计算的美元估算；有请求未定价时是已定价部分下限并以 * 提示，完全未定价显示 —。它不是供应商账单。
 - **Credits**：原始 credit 字段的合计，不是美元金额；缺失时显示为 —。
 - **成功率**：根据会话记录状态统计，不推测日志中没有的 HTTP 状态码或生成速度。
 - **首字时间（TTFT）**：请求发出到上游开始输出的等待。ZCode（`time_to_first_token_ms`）、KCode（`llmFirstTokenLatencyMs`）、Antigravity（原生库首字 Duration）、DSH（stream 最早分片时刻 − `step/start`）是各自本地记录的原生计时；Claude Code（`thinkingDurationMs` 推导，仅思考开头的回复）与 Codex（`item_completed.started_at_ms`，仅新版日志）按时间戳推算，展示带 ≈（起点含客户端组装请求的时间，系统性偏高）；CodeBuddy / WorkBuddy / Qoder / Pi Desktop 的本地会话没有首字计时，显示 —。分组行取中位数，精确口径优先、没有才回落估算口径。

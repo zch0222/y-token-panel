@@ -192,6 +192,19 @@ const FILTER_CASES: UsageQueryFilters[] = [
   },
 ];
 
+
+function stripCostFields(record: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!record) return record;
+  const core = { ...record };
+  for (const key of [
+    "pricingModel", "hasCost", "inputCostUsd", "outputCostUsd",
+    "cacheReadCostUsd", "cacheCreationCostUsd", "totalCostUsd",
+  ]) {
+    delete core[key];
+  }
+  return core;
+}
+
 describe("UsageStore 聚合查询与 JS 口径一致性", () => {
   it.each(FILTER_CASES.map((filters) => [JSON.stringify(filters), filters] as const))(
     "筛选 %s 的汇总、趋势与分组与 JS 全量管线一致",
@@ -443,8 +456,8 @@ describe("UsageStore 聚合查询与 JS 口径一致性", () => {
     records.push({ ...target, harness: "codebuddy", id: "claude:shared-id" });
     commitRecords(store, records);
     const found = store.queryRecordDetail(target.harness, target.id);
-    expect(found).toEqual(target);
-    expect(store.queryRecordDetail("codebuddy", target.id)).toEqual({
+    expect(stripCostFields(found as unknown as Record<string, unknown>)).toEqual(target);
+    expect(stripCostFields(store.queryRecordDetail("codebuddy", target.id) as unknown as Record<string, unknown>)).toEqual({
       ...target,
       harness: "codebuddy",
     });

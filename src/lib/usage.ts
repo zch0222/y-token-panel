@@ -21,7 +21,7 @@ export type RangeKey = "today" | "yesterday" | "7d" | "30d" | "all" | "custom";
 
 /** 趋势图聚合粒度；custom 按跨度自适应分档。 */
 export type TrendGranularity = "minute" | "hour" | "day";
-export type MetricKey = "credits" | "requests" | "tokens" | "cacheRate";
+export type MetricKey = "cost" | "credits" | "requests" | "tokens" | "cacheRate";
 export type GroupDimension = "model" | "provider" | "project" | "harness";
 export type InputTokenSemantics = "fresh" | "total";
 export type BillingFilter = "all" | "billable" | "unbilled";
@@ -39,6 +39,8 @@ export interface UsageRecord {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** cacheCreationTokens 中按 1 小时 TTL 写入的子集（Claude 单独计价）。 */
+  cacheCreation1hTokens?: number;
   totalTokens: number;
   inputTokenSemantics: InputTokenSemantics;
   hasTokenUsage: boolean;
@@ -60,6 +62,15 @@ export interface UsageRecord {
    * Claude / Codex 按时间戳推算（见 first-token.ts）；其余 Harness 没有。
    */
   firstTokenMs?: number;
+  /** 实际查价使用的归一化/命中模型；找不到价格时缺失。 */
+  pricingModel?: string;
+  inputCostUsd?: number;
+  outputCostUsd?: number;
+  cacheReadCostUsd?: number;
+  cacheCreationCostUsd?: number;
+  /** 本地价格表估算总成本（美元）；hasCost 为 false 时不是 0 美元而是未定价。 */
+  totalCostUsd?: number;
+  hasCost?: boolean;
   status: "success" | "error";
 }
 
@@ -201,6 +212,11 @@ export interface UsageBucketStat {
   unbilledCredits: number;
   tokens: number;
   hasTokens: boolean;
+  /** 本地价格表估算成本（美元）；unpricedRequests > 0 时为已定价部分的下限。 */
+  costUsd: number;
+  hasCost: boolean;
+  /** 有 Token 用量但价格表未命中的请求数。 */
+  unpricedRequests: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -222,6 +238,10 @@ export interface UsageDayModelStat {
   cacheReadTokens: number;
   credits: number;
   hasCredit: boolean;
+  /** 本地价格表估算成本（美元）。 */
+  costUsd: number;
+  hasCost: boolean;
+  unpricedRequests: number;
 }
 
 /** 统计页 月×模型 明细行；不截断，覆盖全部有记录的月份。 */
@@ -258,6 +278,11 @@ export interface UsageSummary {
   unbilledCredits: number;
   tokens: number;
   hasTokens: boolean;
+  /** 本地价格表估算成本（美元）；unpricedRequests > 0 时为已定价部分的下限。 */
+  costUsd: number;
+  hasCost: boolean;
+  /** 有 Token 用量但价格表未命中的请求数。 */
+  unpricedRequests: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -286,6 +311,8 @@ export interface TrendPoint {
   tokens: number;
   requests: number;
   credits: number;
+  /** 本地价格表估算成本（美元）。 */
+  cost: number;
   /** 服务端报告但标记为不计费的 Credits，用于在趋势图上叠加显示。 */
   unbilledCredits: number;
   cacheRate: number;
@@ -457,6 +484,9 @@ export function summarizeRecords(records: UsageRecord[]): UsageSummary {
     unbilledCredits,
     tokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
     hasTokens: records.some((record) => record.hasTokenUsage),
+    costUsd: records.reduce((sum, record) => sum + (record.totalCostUsd ?? 0), 0),
+    hasCost: records.some((record) => record.hasCost === true),
+    unpricedRequests: records.filter((record) => record.hasTokenUsage && record.hasCost !== true).length,
     inputTokens,
     outputTokens: records.reduce((sum, record) => sum + record.outputTokens, 0),
     cacheReadTokens,
@@ -528,6 +558,7 @@ function emptyPoint(key: string, label: string, fullLabel: string): TrendPoint {
     tokens: 0,
     requests: 0,
     credits: 0,
+    cost: 0,
     unbilledCredits: 0,
     cacheRate: 0,
     inputTokens: 0,
@@ -667,6 +698,7 @@ export function buildTrend(
     point.tokens += record.totalTokens;
     point.requests += 1;
     point.credits += record.credits;
+    point.cost += record.totalCostUsd ?? 0;
     if (record.billable === false) point.unbilledCredits += record.reportedCredits ?? 0;
     point.inputTokens += record.inputTokens;
     point.cacheReadTokens += record.cacheReadTokens;

@@ -36,7 +36,7 @@ async function main() {
     path.join(workerData.rootDir, "src", "lib", "usage-worker-entry.ts"),
   ).href;
   const { runUsageScanInWorker } = await import(entryUrl);
-  const result = await runUsageScanInWorker(workerData.databasePath);
+  const result = await runUsageScanInWorker(workerData.databasePath, workerData.harness);
   parentPort.postMessage({ type: "complete", result });
 }
 

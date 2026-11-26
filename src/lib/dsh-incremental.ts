@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
 import { dshSource } from "@/lib/dsh";
@@ -201,7 +201,9 @@ async function importWholeFile(
   seen: Set<string>,
   stats: DshIncrementalStats,
 ): Promise<{ records: UsageRecord[]; cursor: UsageSessionLogState }> {
-  const buffer = await readFile(file.filePath);
+  // 只读 stat 尺寸内的旧前缀：stat 后追加的帧/行下一轮续读，保证
+  // cursorOffset 不超过已记录的 fileSize。
+  const buffer = await readRange(file.filePath, 0, file.size);
   stats.bodyBytesRead += buffer.length;
   stats.fullFilesRead += 1;
   let bytes: Buffer;
