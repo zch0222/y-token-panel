@@ -31,6 +31,8 @@
 
 # agent workspace
 .zcode/
+.v2c/
+.video_agent/
 
 # local persisted usage snapshot
 /.data/

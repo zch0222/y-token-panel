@@ -565,7 +565,7 @@ describe("parseKcodeWireFile（子 agent：step.end 用量）", () => {
       {
         type: "usage.record",
         agentId: "agent-0",
-        model: `kimi-code/${options.model ?? "m"}`,
+        model: options.modelAlias ?? `kimi-code/${options.model ?? "m"}`,
         usage: options.usage ?? REAL_STEP_USAGE,
         usageScope: "turn",
         time: options.start + 900,
