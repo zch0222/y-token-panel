@@ -6,6 +6,7 @@ export const HARNESS_OPTIONS = [
   { id: "workbuddy", label: "WorkBuddy", description: "WorkBuddy Desktop / CLI 本地会话" },
   { id: "qoder", label: "Qoder", description: "Qoder Desktop / CLI 本地会话" },
   { id: "zcode", label: "ZCode", description: "ZCode Desktop / CLI 本地会话" },
+  { id: "opencode", label: "OpenCode", description: "OpenCode 编程助手" },
   { id: "kcode", label: "KCode", description: "Kimi Code Desktop / CLI 本地会话" },
   { id: "claude", label: "Claude Code", description: "Claude Code CLI / Desktop 本地会话" },
   { id: "codex", label: "Codex / ChatGPT", description: "Codex CLI / Desktop 本地会话" },

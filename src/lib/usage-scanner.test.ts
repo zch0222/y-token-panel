@@ -14,6 +14,7 @@ import {
   readWorkBuddyUsageIncremental,
 } from "@/lib/wholefile-incremental";
 import { readDevinUsage } from "@/lib/devin";
+import { readOpenCodeUsage } from "@/lib/opencode";
 import { readZcodeUsage } from "@/lib/zcode";
 import { scanUsageForStorage, type UsageReader } from "@/lib/usage-scanner";
 
@@ -25,6 +26,7 @@ vi.mock("@/lib/codebuddy", () => ({ readCodeBuddyUsage: vi.fn() }));
 vi.mock("@/lib/codex", () => ({ readCodexUsage: vi.fn() }));
 vi.mock("@/lib/dsh", () => ({ readDshUsage: vi.fn() }));
 vi.mock("@/lib/kcode", () => ({ readKcodeUsage: vi.fn() }));
+vi.mock("@/lib/opencode", () => ({ readOpenCodeUsage: vi.fn() }));
 vi.mock("@/lib/pi-desktop", () => ({ readPiDesktopUsage: vi.fn() }));
 vi.mock("@/lib/qoder", () => ({ readQoderUsage: vi.fn() }));
 vi.mock("@/lib/workbuddy", () => ({ readWorkBuddyUsage: vi.fn() }));
@@ -54,6 +56,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     pidesktop: vi.fn(),
   };
   const zcodeReader = vi.fn<UsageReader>();
+  const opencodeReader = vi.fn<UsageReader>();
   const devinReader = vi.fn<UsageReader>();
 
   function record(id: string, harness: HarnessId, timestamp: number): UsageRecord {
@@ -126,6 +129,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     vi.mocked(readKcodeUsageIncremental).mockImplementation(incrementals.kcode);
     vi.mocked(readWorkBuddyUsageIncremental).mockImplementation(incrementals.workbuddy);
     vi.mocked(readZcodeUsage).mockImplementation(zcodeReader);
+    vi.mocked(readOpenCodeUsage).mockImplementation(opencodeReader);
     vi.mocked(readDevinUsage).mockImplementation(devinReader);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
@@ -135,6 +139,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     vi.restoreAllMocks();
     for (const mock of Object.values(incrementals)) mock.mockReset();
     zcodeReader.mockReset();
+    opencodeReader.mockReset();
     devinReader.mockReset();
   });
 
@@ -161,6 +166,16 @@ describe("scanUsageForStorage 来源错误隔离", () => {
         scannedFiles: 1,
         skippedFiles: 0,
         source: "/tmp/devin",
+        sourceAvailable: true,
+      }),
+    );
+    opencodeReader.mockImplementation(async () =>
+      Promise.resolve({
+        harness: "opencode",
+        records: [record("opencode-1", "opencode", 1000)],
+        scannedFiles: 1,
+        skippedFiles: 0,
+        source: "/tmp/opencode",
         sourceAvailable: true,
       }),
     );
@@ -209,7 +224,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     const result = await scanUsageForStorage(store);
     const harnesses = result.usage.sources.map((source) => source.harness);
     expect(harnesses).not.toContain("dsh");
-    expect(harnesses).toHaveLength(10);
+    expect(harnesses).toHaveLength(11);
     await commitRound(result);
     expect(store.readNormalizedRecords("dsh")).toHaveLength(0);
   });
@@ -219,6 +234,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
       incrementals[harness].mockRejectedValue(new Error(`${harness} down`));
     }
     zcodeReader.mockRejectedValue(new Error("zcode down"));
+    opencodeReader.mockRejectedValue(new Error("opencode down"));
     devinReader.mockRejectedValue(new Error("devin down"));
     await expect(scanUsageForStorage(store)).rejects.toThrow("down");
   });
@@ -227,7 +243,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
     it("只扫描目标来源，其余来源沿用已提交记录与摘要", async () => {
       stubAllSources();
       await commitRound(await scanUsageForStorage(store));
-      expect(store.readNormalizedRecords()).toHaveLength(11);
+      expect(store.readNormalizedRecords()).toHaveLength(12);
 
       // 第二轮只同步 codex：新记录替换，其他来源保持第一轮数据。
       incrementals.codex.mockImplementation(async () =>
@@ -237,6 +253,7 @@ describe("scanUsageForStorage 来源错误隔离", () => {
         incrementals[harness].mockClear();
       }
       zcodeReader.mockClear();
+      opencodeReader.mockClear();
       devinReader.mockClear();
 
       const result = await scanUsageForStorage(store, "codex");
@@ -248,10 +265,11 @@ describe("scanUsageForStorage 来源错误隔离", () => {
         expect(incrementals[harness]).not.toHaveBeenCalled();
       }
       expect(zcodeReader).not.toHaveBeenCalled();
+      expect(opencodeReader).not.toHaveBeenCalled();
       expect(devinReader).not.toHaveBeenCalled();
 
       // 合并结果仍覆盖全部来源；其他来源数据与第一轮一致。
-      expect(result.usage.sources).toHaveLength(11);
+      expect(result.usage.sources).toHaveLength(12);
       await commitRound(result);
       const records = store.readNormalizedRecords();
       expect(records.filter((item) => item.harness === "codex").map((item) => item.id)).toEqual([

@@ -9,6 +9,7 @@ import { readDevinUsage } from "@/lib/devin";
 import { readDshUsage } from "@/lib/dsh";
 import { readDshUsageIncremental } from "@/lib/dsh-incremental";
 import { readKcodeUsage } from "@/lib/kcode";
+import { readOpenCodeUsage } from "@/lib/opencode";
 import { readPiDesktopUsage } from "@/lib/pi-desktop";
 import { readQoderUsage } from "@/lib/qoder";
 import { readQoderUsageIncremental } from "@/lib/qoder-incremental";
@@ -56,6 +57,7 @@ const usageReaders: Array<{ harness: HarnessId; read: UsageReader }> = [
   { harness: "workbuddy", read: readWorkBuddyUsage },
   { harness: "qoder", read: readQoderUsage },
   { harness: "zcode", read: readZcodeUsage },
+  { harness: "opencode", read: readOpenCodeUsage },
   { harness: "kcode", read: readKcodeUsage },
   { harness: "claude", read: readClaudeUsage },
   { harness: "codex", read: readCodexUsage },

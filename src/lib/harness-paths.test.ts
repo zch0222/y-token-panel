@@ -8,6 +8,7 @@ import { codeBuddySource } from "@/lib/codebuddy";
 import { codexRoot } from "@/lib/codex";
 import { dshSource } from "@/lib/dsh";
 import { kcodeRoot } from "@/lib/kcode";
+import { resolveOpenCodeDatabasePath, resolveOpenCodeDataDir } from "@/lib/opencode";
 import { resolvePiDesktopSessionsDir } from "@/lib/pi-desktop";
 import { qoderSource } from "@/lib/qoder";
 import { workBuddySource } from "@/lib/workbuddy";
@@ -28,6 +29,9 @@ const ENV_KEYS = [
   "ZCODE_DATA_DIR",
   "ZCODE_SESSION_DB_PATH",
   "ZCODE_SESSION_DB",
+  "OPENCODE_DATA_DIR",
+  "OPENCODE_DB",
+  "XDG_DATA_HOME",
   "KIMI_CODE_HOME",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
@@ -254,6 +258,33 @@ describe("Harness 配置路径与本机实现一致", () => {
     process.env.DEVIN_DATA_DIR = "/data/devin-root";
     expect(resolveDevinDatabasePath()).toBe(
       path.join(path.resolve("/data/devin-root"), "cli", "sessions.db"),
+    );
+  });
+
+  it("OpenCode 对齐官方 xdg-basedir 与 OPENCODE_DB，面板 DATA_DIR 只覆盖数据根", () => {
+    expect(resolveOpenCodeDataDir()).toBe(path.join(homedir(), ".local", "share", "opencode"));
+    expect(resolveOpenCodeDatabasePath()).toBe(
+      path.join(homedir(), ".local", "share", "opencode", "opencode.db"),
+    );
+
+    process.env.XDG_DATA_HOME = "/data/xdg";
+    expect(resolveOpenCodeDataDir()).toBe(path.join("/data/xdg", "opencode"));
+    expect(resolveOpenCodeDatabasePath()).toBe(path.join("/data/xdg", "opencode", "opencode.db"));
+
+    // OPENCODE_DB 是官方覆盖项：相对路径基于数据目录，绝对路径直接使用。
+    process.env.OPENCODE_DB = "nested/opencode-custom.db";
+    expect(resolveOpenCodeDatabasePath()).toBe(
+      path.resolve("/data/xdg/opencode/nested/opencode-custom.db"),
+    );
+    process.env.OPENCODE_DB = "/data/opencode-absolute.db";
+    expect(resolveOpenCodeDatabasePath()).toBe(path.resolve("/data/opencode-absolute.db"));
+    delete process.env.OPENCODE_DB;
+
+    // 面板专用 OPENCODE_DATA_DIR 是数据目录本身，优先级高于 XDG。
+    process.env.OPENCODE_DATA_DIR = "  /data/opencode-root  ";
+    expect(resolveOpenCodeDataDir()).toBe(path.resolve("/data/opencode-root"));
+    expect(resolveOpenCodeDatabasePath()).toBe(
+      path.join(path.resolve("/data/opencode-root"), "opencode.db"),
     );
   });
 
